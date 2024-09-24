@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 
-	"go.dataddo.com/pgq/internal/pg"
-	"go.dataddo.com/pgq/internal/require"
+	"github.com/joschi/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/require"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"

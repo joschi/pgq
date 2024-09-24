@@ -14,10 +14,10 @@ import (
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/metric/noop"
 
-	. "go.dataddo.com/pgq"
-	"go.dataddo.com/pgq/internal/pg"
-	"go.dataddo.com/pgq/internal/require"
-	"go.dataddo.com/pgq/x/schema"
+	. "github.com/joschi/pgq"
+	"github.com/joschi/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/require"
+	"github.com/joschi/pgq/x/schema"
 )
 
 func TestConsumer_Run_graceful_shutdown(t *testing.T) {

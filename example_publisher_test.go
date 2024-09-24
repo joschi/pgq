@@ -7,7 +7,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.dataddo.com/pgq"
+
+	"github.com/joschi/pgq"
 )
 
 type PayloadStruct struct {

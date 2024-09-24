@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/sync/semaphore"
 
-	"go.dataddo.com/pgq/internal/require"
+	"github.com/joschi/pgq/internal/require"
 )
 
 func TestConsumer_generateQuery(t *testing.T) {

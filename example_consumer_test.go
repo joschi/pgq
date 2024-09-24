@@ -10,7 +10,8 @@ import (
 	"os/signal"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.dataddo.com/pgq"
+
+	"github.com/joschi/pgq"
 )
 
 type Handler struct{}

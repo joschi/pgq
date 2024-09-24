@@ -4,7 +4,7 @@ package schema
 import (
 	"fmt"
 
-	"go.dataddo.com/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/pg"
 )
 
 // GenerateCreateTableQuery returns the query for creating the queue table

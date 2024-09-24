@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"go.dataddo.com/pgq/internal/require"
+	"github.com/joschi/pgq/internal/require"
 )
 
 func Test_buildInsertQuery(t *testing.T) {

@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pkg/errors"
 
-	"go.dataddo.com/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/pg"
 )
 
 type publisher struct {

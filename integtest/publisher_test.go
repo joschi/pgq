@@ -8,10 +8,10 @@ import (
 
 	"github.com/jackc/pgtype"
 
-	"go.dataddo.com/pgq"
-	pgutils "go.dataddo.com/pgq/internal/pg"
-	"go.dataddo.com/pgq/internal/require"
-	"go.dataddo.com/pgq/x/schema"
+	"github.com/joschi/pgq"
+	pgutils "github.com/joschi/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/require"
+	"github.com/joschi/pgq/x/schema"
 )
 
 func TestPublisher(t *testing.T) {

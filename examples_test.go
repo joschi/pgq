@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.dataddo.com/pgq"
 	"go.opentelemetry.io/otel/metric/noop"
+
+	"github.com/joschi/pgq"
 )
 
 var db *pgxpool.Pool

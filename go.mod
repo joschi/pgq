@@ -1,4 +1,4 @@
-module go.dataddo.com/pgq
+module github.com/joschi/pgq
 
 go 1.22
 

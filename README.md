@@ -1,7 +1,7 @@
 # PGQ - go queues on top of postgres
 
-[![GoDoc](https://pkg.go.dev/badge/go.dataddo.com/pgq)](https://pkg.go.dev/go.dataddo.com/pgq)
-[![GoReportCard](https://goreportcard.com/badge/go.dataddo.com/pgq)](https://goreportcard.com/report/go.dataddo.com/pgq)
+[![GoDoc](https://pkg.go.dev/badge/github.com/joschi/pgq)](https://pkg.go.dev/github.com/joschi/pgq)
+[![GoReportCard](https://goreportcard.com/badge/github.com/joschi/pgq)](https://goreportcard.com/report/github.com/joschi/pgq)
 
 <img src="logo.png" alt="pgsq logo" width="200" align="right" style="margin: 20px"/>
 
@@ -64,7 +64,7 @@ Pgq is intended to replace the specialized message brokers in environments where
 ## Installation
 To install PGQ, use the go get command:
 ```
-go get go.dataddo.com/pgq@latest
+go get github.com/joschi/pgq@latest
 ```
 
 ## Setup
@@ -81,7 +81,7 @@ package main
 
 import (
 	"fmt"
-	"go.dataddo.com/pgq/x/schema"
+	"github.com/joschi/pgq/x/schema"
 )
 
 func main() {
@@ -111,7 +111,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"go.dataddo.com/pgq"
+	"github.com/joschi/pgq"
 )
 
 func main() {
@@ -191,7 +191,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.dataddo.com/pgq"
+	"github.com/joschi/pgq"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -254,7 +254,7 @@ consumer, err := NewConsumer(db, queueName, handler,
 	)
 ```
 
-For more detailed usage examples and API documentation, please refer to the <a href="https://pkg.go.dev/go.dataddo.com/pgq" target="_blank">Dataddo pgq GoDoc page</a>.
+For more detailed usage examples and API documentation, please refer to the <a href="https://pkg.go.dev/github.com/joschi/pgq" target="_blank">Dataddo pgq GoDoc page</a>.
 
 ## Message
 

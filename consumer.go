@@ -27,8 +27,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"golang.org/x/sync/semaphore"
 
-	"go.dataddo.com/pgq/internal/pg"
-	"go.dataddo.com/pgq/internal/query"
+	"github.com/joschi/pgq/internal/pg"
+	"github.com/joschi/pgq/internal/query"
 )
 
 type fatalError struct {
