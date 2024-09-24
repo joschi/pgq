@@ -238,7 +238,6 @@ You can configure the consumer by passing the optional `ConsumeOptions` when cre
 | WithLogger | Provide your own `*slog.Logger` to have the pgq logs under control                                                                                                                                                                                                                      |
 | WithMaxParallelMessages         | Set how many consumers you want to run concurently in your app.                                                                                                                                                                                                                         |
 | WithLockDuration         | You can set your own locks effective duration according to your needs `time.Duration`. If you handle messages quickly, set the duration in seconds/minutes. If you play with long-duration jobs it makes sense to set this to bigger value than your longest job takes to be processed. |
-| WithPollingInterval         | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                   |
 | WithInvalidMessageCallback         | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                                |
 | WithHistoryLimit         | how far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though the are unprocessed.                                                                                                                            |
 | WithMetrics         | No problem to attach your own metrics provider (prometheus, ...) here.                                                                                                                                                                                                                  |
@@ -248,7 +247,6 @@ You can configure the consumer by passing the optional `ConsumeOptions` when cre
 consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(10 * time.Minute),
-		WithPollingInterval(2 * time.Second),
 		WithMaxParallelMessages(1),
 		WithMetrics(noop.Meter{}),
 	)
@@ -331,7 +329,7 @@ which enables the consumer to fetch the messages in the queue in the order they 
 <img src="docs/consumer_loop.png" alt="The consumer loop diagram" width="300" align="right" style="margin: 20px" />
 Consumers periodically ask the queue table for the new messages to be processed.
 
-- When there is no message to be processed, consumer idles for a `polling interval` duration and then tries again.
+- When there is no message to be processed, consumer waits for a notification on the queue-specific channel.
 - When the consumer finds the message to be processed, it locks it by updating the `locked_until` field with the `lock duration` timestamp.
 - If the consumer fails to update the `locked_until` field, it means that another consumer has already locked the message, and the current consumer tries to find the message again.
 - If the consumer successfully locks the message, it starts to process it.

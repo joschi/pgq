@@ -7,8 +7,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"go.dataddo.com/pgq"
 	"go.opentelemetry.io/otel/metric/noop"
+
+	"go.dataddo.com/pgq"
 )
 
 var db *pgxpool.Pool
@@ -17,7 +18,6 @@ func ExampleNewConsumer() {
 	slogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c, err := pgq.NewConsumer(db, "queue_name", &Handler{},
 		pgq.WithLockDuration(10*time.Minute),
-		pgq.WithPollingInterval(500*time.Millisecond),
 		pgq.WithAckTimeout(5*time.Second),
 		pgq.WithMessageProcessingReserveDuration(5*time.Second),
 		pgq.WithMaxParallelMessages(42),

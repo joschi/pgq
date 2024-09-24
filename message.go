@@ -147,3 +147,7 @@ func buildColumnListFromTags(data interface{}) ([]string, error) {
 
 	return columns, nil
 }
+
+func channelName(queueName string) string {
+	return "pgq_" + queueName
+}
