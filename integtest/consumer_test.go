@@ -51,7 +51,6 @@ func TestConsumer_Run_graceful_shutdown(t *testing.T) {
 	consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(time.Hour),
-		WithPollingInterval(time.Second),
 		WithMaxParallelMessages(1),
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
@@ -127,7 +126,6 @@ func TestConsumer_Run_FutureMessage(t *testing.T) {
 	consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(time.Hour),
-		WithPollingInterval(time.Second),
 		WithMaxParallelMessages(1),
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
@@ -200,7 +198,6 @@ func TestConsumer_Run_MetadataFilter_Equal(t *testing.T) {
 	consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(time.Hour),
-		WithPollingInterval(time.Second),
 		WithMaxParallelMessages(1),
 		WithMetadataFilter(&MetadataFilter{Key: "baz", Operation: OpEqual, Value: "quux"}),
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
@@ -274,7 +271,6 @@ func TestConsumer_Run_MetadataFilter_NotEqual(t *testing.T) {
 	consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(time.Hour),
-		WithPollingInterval(time.Second),
 		WithMaxParallelMessages(1),
 		WithMetadataFilter(&MetadataFilter{Key: "baz", Operation: OpNotEqual, Value: "quux"}),
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
