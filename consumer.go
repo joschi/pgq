@@ -79,6 +79,8 @@ func (fn MessageHandlerFunc) HandleMessage(ctx context.Context, msg *MessageInco
 type consumerConfig struct {
 	// LockDuration is the maximal duration for how long the message remains locked for other consumers.
 	LockDuration time.Duration
+	// PollingInterval defines how frequently consumer checks the queue for new messages.
+	PollingInterval time.Duration
 	// AckTimeout is the timeout for updating the message status when message is processed.
 	AckTimeout time.Duration
 	// MaxParallelMessages sets how many jobs can single consumer process simultaneously.
@@ -108,6 +110,7 @@ var noopLogger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{L
 
 var defaultConsumerConfig = consumerConfig{
 	LockDuration:                     time.Hour,
+	PollingInterval:                  5 * time.Second,
 	AckTimeout:                       1 * time.Second,
 	MessageProcessingReserveDuration: 1 * time.Second,
 	MaxParallelMessages:              1,
@@ -146,6 +149,14 @@ type ConsumerOption func(c *consumerConfig)
 func WithLockDuration(d time.Duration) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.LockDuration = d
+	}
+}
+
+// WithPollingInterval sets how frequently consumer checks the queue for new
+// messages.
+func WithPollingInterval(d time.Duration) ConsumerOption {
+	return func(c *consumerConfig) {
+		c.PollingInterval = d
 	}
 }
 
@@ -304,18 +315,6 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	defer wg.Wait() // wait for handlers to finish
-
-	conn, err := c.db.Acquire(ctx)
-	if err != nil {
-		return errors.Wrapf(err, "acquiring connection from pool")
-	}
-	defer conn.Release()
-
-	_, err = conn.Exec(ctx, "LISTEN "+channelName(c.queueName))
-	if err != nil {
-		return errors.Wrapf(err, "error listening to channel")
-	}
-
 	for {
 		msgs, err := c.consumeMessages(ctx, query)
 		if err != nil {
@@ -334,11 +333,6 @@ func (c *Consumer) Run(ctx context.Context) error {
 				defer c.sem.Release(1)
 				c.handleMessage(ctx, msg)
 			}(msg)
-		}
-
-		_, notificationErr := conn.Conn().WaitForNotification(ctx)
-		if notificationErr != nil {
-			return errors.Wrapf(notificationErr, "error waiting for notification")
 		}
 	}
 }
@@ -474,25 +468,28 @@ func prepareCtxTimeout() (func(td time.Duration) context.Context, context.Cancel
 }
 
 func (c *Consumer) consumeMessages(ctx context.Context, query *query.Builder) ([]*MessageIncoming, error) {
-	maxMsg, err := acquireMaxFromSemaphore(ctx, c.sem, int64(c.cfg.MaxParallelMessages))
-	if err != nil {
-		return nil, fatalError{Err: errors.WithStack(err)}
-	}
-	msgs, err := c.tryConsumeMessages(ctx, query, maxMsg)
-	if err != nil {
-		c.sem.Release(maxMsg)
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return nil, errors.WithStack(err)
+	for {
+		maxMsg, err := acquireMaxFromSemaphore(ctx, c.sem, int64(c.cfg.MaxParallelMessages))
+		if err != nil {
+			return nil, fatalError{Err: errors.WithStack(err)}
 		}
-		select {
-		case <-ctx.Done():
-			return nil, fatalError{Err: ctx.Err()}
+		msgs, err := c.tryConsumeMessages(ctx, query, maxMsg)
+		if err != nil {
+			c.sem.Release(maxMsg)
+			if !errors.Is(err, pgx.ErrNoRows) {
+				return nil, errors.WithStack(err)
+			}
+			select {
+			case <-ctx.Done():
+				return nil, fatalError{Err: ctx.Err()}
+			case <-time.After(c.cfg.PollingInterval):
+				continue
+			}
 		}
+		// release unused resources
+		c.sem.Release(maxMsg - int64(len(msgs)))
+		return msgs, nil
 	}
-	// release unused resources
-	c.sem.Release(maxMsg - int64(len(msgs)))
-	return msgs, nil
-
 }
 
 type pgMessage struct {

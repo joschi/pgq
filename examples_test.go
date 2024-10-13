@@ -18,6 +18,7 @@ func ExampleNewConsumer() {
 	slogger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c, err := pgq.NewConsumer(db, "queue_name", &Handler{},
 		pgq.WithLockDuration(10*time.Minute),
+		pgq.WithPollingInterval(500*time.Millisecond),
 		pgq.WithAckTimeout(5*time.Second),
 		pgq.WithMessageProcessingReserveDuration(5*time.Second),
 		pgq.WithMaxParallelMessages(42),
