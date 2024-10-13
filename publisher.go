@@ -103,12 +103,6 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 	if err := rows.Err(); err != nil {
 		return nil, errors.WithStack(err)
 	}
-
-	_, notifyErr := tx.Exec(ctx, "SELECT pg_notify($1, $2)", channelName(queue), "")
-	if notifyErr != nil {
-		return nil, errors.WithStack(notifyErr)
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return nil, errors.WithStack(err)
 	}
