@@ -3,9 +3,11 @@ package integtest
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -310,6 +312,75 @@ func TestConsumer_Run_MetadataFilter_NotEqual(t *testing.T) {
 
 }
 
+func TestConsumer_Continue_After_Error(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+
+	db := openDB(t)
+	queueName := t.Name()
+	_, _ = db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+	_, err := db.Exec(ctx, schema.GenerateCreateTableQuery(queueName))
+	t.Cleanup(func() {
+		db := openDB(t)
+		// _, err := db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+		// require.NoError(t, err)
+		db.Close()
+	})
+	require.NoError(t, err)
+	publisher := NewPublisher(db)
+
+	msgIDs, err := publisher.Publish(ctx, queueName,
+		&MessageOutgoing{Payload: json.RawMessage(`{"baz":"queex"}`)},
+		&MessageOutgoing{Payload: json.RawMessage(`{"baz":"queex"}`)},
+		&MessageOutgoing{Payload: json.RawMessage(`{"baz":"queex"}`)},
+		&MessageOutgoing{Payload: json.RawMessage(`{"baz":"queex"}`)},
+	)
+
+	require.NoError(t, err)
+	require.Equal(t, 4, len(msgIDs))
+
+	// consumer
+	handler := &errorHandler{}
+	handler.wg.Add(4)
+	consumer, err := NewConsumer(db, queueName, handler,
+		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+		WithLockDuration(time.Second),
+		WithPollingInterval(1*time.Second),
+		WithMaxParallelMessages(2),
+		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
+			require.NoError(t, err)
+		}),
+		WithMetrics(noop.Meter{}),
+	)
+	require.NoError(t, err)
+
+	consumeCtx, consumeCancel := context.WithCancel(ctx)
+	go consumer.Run(consumeCtx)
+	handler.wg.Wait()
+	consumeCancel()
+
+	db.Close()
+
+	// evaluate
+	query := fmt.Sprintf(
+		`SELECT count(1) FROM %s WHERE processed_at is not null`,
+		pg.QuoteIdentifier(queueName),
+	)
+	db = openDB(t)
+	t.Cleanup(func() {
+		db.Close()
+	})
+	row := db.QueryRow(ctx, query)
+	var (
+		msgCount int
+	)
+	err = row.Scan(&msgCount)
+	require.NoError(t, err)
+	require.Equal(t, 4, msgCount)
+}
+
 func openDB(t *testing.T) *pgxpool.Pool {
 	dsn, ok := os.LookupEnv("TEST_POSTGRES_DSN")
 	if !ok {
@@ -342,6 +413,9 @@ func ensureUUIDExtension(t *testing.T, db *pgxpool.Pool) {
 type (
 	slowHandler    struct{}
 	regularHandler struct{}
+	errorHandler   struct {
+		wg sync.WaitGroup
+	}
 )
 
 func (s *regularHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (processed bool, err error) {
@@ -352,6 +426,12 @@ func (s *regularHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) 
 func (s *slowHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (processed bool, err error) {
 	<-ctx.Done()
 	return MessageNotProcessed, ctx.Err()
+}
+
+func (s *errorHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (processed bool, err error) {
+	<-ctx.Done()
+	s.wg.Done()
+	return MessageProcessed, errors.New("some error")
 }
 
 type tbWriter struct {
