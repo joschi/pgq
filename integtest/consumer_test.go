@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"sync"
 	"testing"
 	"time"
 
@@ -324,8 +323,8 @@ func TestConsumer_Continue_After_Error(t *testing.T) {
 	_, err := db.Exec(ctx, schema.GenerateCreateTableQuery(queueName))
 	t.Cleanup(func() {
 		db := openDB(t)
-		// _, err := db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
-		// require.NoError(t, err)
+		_, err := db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+		require.NoError(t, err)
 		db.Close()
 	})
 	require.NoError(t, err)
@@ -343,11 +342,10 @@ func TestConsumer_Continue_After_Error(t *testing.T) {
 
 	// consumer
 	handler := &errorHandler{}
-	handler.wg.Add(4)
 	consumer, err := NewConsumer(db, queueName, handler,
 		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
 		WithLockDuration(time.Second),
-		WithPollingInterval(1*time.Second),
+		WithPollingInterval(500*time.Millisecond),
 		WithMaxParallelMessages(2),
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
@@ -356,10 +354,10 @@ func TestConsumer_Continue_After_Error(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	consumeCtx, consumeCancel := context.WithCancel(ctx)
-	go consumer.Run(consumeCtx)
-	handler.wg.Wait()
-	consumeCancel()
+	consumeCtx, consumeCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer consumeCancel()
+	err = consumer.Run(consumeCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
 
 	db.Close()
 
@@ -413,9 +411,7 @@ func ensureUUIDExtension(t *testing.T, db *pgxpool.Pool) {
 type (
 	slowHandler    struct{}
 	regularHandler struct{}
-	errorHandler   struct {
-		wg sync.WaitGroup
-	}
+	errorHandler   struct{}
 )
 
 func (s *regularHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (processed bool, err error) {
@@ -430,7 +426,6 @@ func (s *slowHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (pr
 
 func (s *errorHandler) HandleMessage(ctx context.Context, _ *MessageIncoming) (processed bool, err error) {
 	<-ctx.Done()
-	s.wg.Done()
 	return MessageProcessed, errors.New("some error")
 }
 
