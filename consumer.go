@@ -103,6 +103,9 @@ type consumerConfig struct {
 
 	MetadataFilters []MetadataFilter
 
+	// FiniteConsumption, when true it runs until no messages can be consumed
+	FiniteConsumption bool
+
 	Logger *slog.Logger
 }
 
@@ -224,6 +227,13 @@ func WithLogger(logger *slog.Logger) ConsumerOption {
 	}
 }
 
+// WithStopOnEmptyQueue sets whether the consumer should run until no messages can be consumed.
+func WithStopOnEmptyQueue(finiteConsumption bool) ConsumerOption {
+	return func(c *consumerConfig) {
+		c.FiniteConsumption = finiteConsumption
+	}
+}
+
 // MetadataFilter is a filter for metadata. Right now support only direct matching of key/value
 type (
 	MetadataOperation string
@@ -318,6 +328,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 	for {
 		msgs, err := c.consumeMessages(ctx, query)
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return io.EOF
+			}
 			if errors.As(err, &fatalError{}) {
 				return errors.Wrapf(err, "consuming from PostgreSQL queue %s", c.queueName)
 			}
@@ -476,6 +489,9 @@ func (c *Consumer) consumeMessages(ctx context.Context, query *query.Builder) ([
 		msgs, err := c.tryConsumeMessages(ctx, query, maxMsg)
 		if err != nil {
 			c.sem.Release(maxMsg)
+			if c.cfg.FiniteConsumption && errors.Is(err, pgx.ErrNoRows) {
+				return nil, io.EOF
+			}
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return nil, errors.WithStack(err)
 			}
