@@ -233,16 +233,16 @@ func (h *handler) HandleMessage(_ context.Context, msg *pgq.MessageIncoming) (pr
 
 You can configure the consumer by passing the optional `ConsumeOptions` when creating it.
 
-| Option     | Description                                                                                                                                                                                                                                                                             |
-|:-----------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| WithLogger | Provide your own `*slog.Logger` to have the pgq logs under control                                                                                                                                                                                                                      |
-| WithMaxParallelMessages         | Set how many consumers you want to run concurently in your app.                                                                                                                                                                                                                         |
-| WithLockDuration         | You can set your own locks effective duration according to your needs `time.Duration`. If you handle messages quickly, set the duration in seconds/minutes. If you play with long-duration jobs it makes sense to set this to bigger value than your longest job takes to be processed. |
-| WithPollingInterval         | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                   |
-| WithInvalidMessageCallback         | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                                |
-| WithHistoryLimit         | how far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though the are unprocessed.                                                                                                                            |
-| WithMetrics         | No problem to attach your own metrics provider (prometheus, ...) here.                                                                                                                                                                                                                  |
-| WithMetadataFilter  | Allows to filter consumed message. At this point OpEqual and OpNotEqual are supported              |
+| Option                     | Description                                                                                                                                                                                                                                                                             |
+|:---------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| WithLogger                 | Provide your own `*slog.Logger` to have the pgq logs under control                                                                                                                                                                                                                      |
+| WithMaxParallelMessages    | Set how many consumers you want to run concurrently in your app.                                                                                                                                                                                                                        |
+| WithLockDuration           | You can set your own locks effective duration according to your needs `time.Duration`. If you handle messages quickly, set the duration in seconds/minutes. If you play with long-duration jobs it makes sense to set this to bigger value than your longest job takes to be processed. |
+| WithPollingInterval        | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                   |
+| WithInvalidMessageCallback | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                                |
+| WithHistoryLimit           | how far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though the are unprocessed.                                                                                                                            |
+| WithMetrics                | No problem to attach your own metrics provider (prometheus, ...) here.                                                                                                                                                                                                                  |
+| WithMetadataFilter         | Allows to filter consumed message. At this point OpEqual and OpNotEqual are supported                                                                                                                                                                                                   |
 
 ```go
 consumer, err := NewConsumer(db, queueName, handler,
@@ -314,7 +314,7 @@ select * from queue_name where processed_at is not null and error_detail is not 
 -- messages created in last 1 day which have not been processed yet
 select * from queue_name where processed_at is null and created_at > NOW() - INTERVAL '1 DAY';
 
--- messages causing unexpected failures of consumers (ususally OOM) 
+-- messages causing unexpected failures of consumers (usually OOM) 
 select * from queue_name where consumed_count > 1;
 
 -- top 10 slowest processed messages
@@ -374,7 +374,7 @@ It must also contain the indexes so the partition derived tables have it too.
 ```sql
 CREATE TABLE my_queue_name_template (id UUID NOT NULL DEFAULT gen_random_uuid(), created_at TIMESTAMP(0) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, payload JSONB DEFAULT NULL, metadata JSONB DEFAULT NULL, locked_until TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, processed_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, error_detail TEXT DEFAULT NULL, started_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, consumed_count INT DEFAULT 0 NOT NULL, PRIMARY KEY(id, created_at));
 CREATE INDEX IDX_CREATED_AT_TPL ON my_queue_name_template (created_at);
-CREATE INDEX IDX_PROCESED_AT_TPL ON my_queue_name_template (consumed_count, processed_at) WHERE (processed_at IS NULL);
+CREATE INDEX IDX_PROCESSED_AT_TPL ON my_queue_name_template (consumed_count, processed_at) WHERE (processed_at IS NULL);
 ```
 
 2. we create the partitioned table with the same structure as the template table, but with the partitioning key:
@@ -409,12 +409,12 @@ We don't need to add any new features, but we are open to any bug fixes, perform
 
 The unit tests will run without any additional setup, but the integration tests require the running postgres instance, otherwise are skipped. 
 
-In one shell start the postgres docker container:
+Start the PostgreSQL container in a shell:
 ```shell
 docker run --rm -it -e POSTGRES_PASSWORD=postgres -p 5432:5432 postgres:15-alpine
 ```
 
-In another shell run the tests:
+Run the tests in another shell:
 ```shell
 TEST_POSTGRES_DSN=postgres://postgres:postgres@localhost:5432/postgres go test ./...
 ```
