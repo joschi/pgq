@@ -1,0 +1,55 @@
+name: "CodeQL"
+permissions: read-all
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [ actions, go ]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Setup Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5
+        if: ${{ matrix.language == 'go' }}
+        with:
+          go-version-file: 'go.mod'
+      - name: Initialize CodeQL (Actions)
+        uses: github/codeql-action/init@d68b2d4edb4189fd2a5366ac14e72027bd4b37dd # v3.28.2
+        if: ${{ matrix.language == 'actions' }}
+        with:
+          languages: actions
+          dependency-caching: true
+      - name: Initialize CodeQL (Go)
+        uses: github/codeql-action/init@d68b2d4edb4189fd2a5366ac14e72027bd4b37dd # v3.28.2
+        if: ${{ matrix.language == 'go' }}
+        with:
+          queries: >
+            +go-code-scanning,
+            go-security-extended,
+            go-security-and-quality
+          languages: go
+          dependency-caching: true
+          packs: >
+            +githubsecuritylab/codeql-go-queries
+          config: |
+            threat-models: local
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@d68b2d4edb4189fd2a5366ac14e72027bd4b37dd # v3.28.2
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@d68b2d4edb4189fd2a5366ac14e72027bd4b37dd # v3.28.2

@@ -1,8 +1,5 @@
 name: test
-
-# Controls when the workflow will run
 on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
   push:
     branches: [ "main" ]
   pull_request:
@@ -11,14 +8,10 @@ on:
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
-permissions:
-  contents: write
+permissions: read-all
 
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "test"
   test:
-    name: test
     strategy:
       matrix:
         # version must be string, otherwise it will be converted to float
@@ -56,27 +49,17 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - name: checkout
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
 
       # Setting up Go in the runner
-      - name: setup go
-        uses: actions/setup-go@v5
+      - name: Setup Go
+        uses: actions/setup-go@f111f3307d8850f501ac008e886eec1fd1932a34 # v5
         with:
           go-version: ${{ matrix.go-version }}
 
-      # Disabled because of incompatibility with Matrix Strategy
-      #      # Cache Go build cache and modcache
-      #      - name: cache deps
-      #        uses: actions/cache@v3
-      #        with:
-      #          path: |
-      #            ~/.cache/go-build
-      #            ~/go/pkg/mod
-      #          key: ${{ runner.os }}}-go-${{ matrix.go-version }}-postgres-${{ matrix.postgres-version }}-${{ hashFiles('**/go.sum') }}
-      #          restore-keys: |
-      #            ${{ runner.os }}-go-${{ matrix.go-version }}-
-
       # Runs Go tests
-      - name: test
+      - name: Run Go tests
         run: go test ./...
