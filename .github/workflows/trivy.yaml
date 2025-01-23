@@ -1,6 +1,6 @@
 name: trivy
 on: [ push, pull_request ]
-permissions: read-all
+permissions: {}
 
 jobs:
   trivy:
