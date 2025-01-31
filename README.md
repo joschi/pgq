@@ -242,6 +242,7 @@ You can configure the consumer by passing the optional `ConsumeOptions` when cre
 | WithInvalidMessageCallback | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                                |
 | WithHistoryLimit           | how far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though the are unprocessed.                                                                                                                            |
 | WithMetrics                | No problem to attach your own metrics provider (prometheus, ...) here.                                                                                                                                                                                                                  |
+| WithTracer                 | No problem to attach your own trace provider here.                                                                                                                                                                                                                                      |
 | WithMetadataFilter         | Allows to filter consumed message. At this point OpEqual and OpNotEqual are supported                                                                                                                                                                                                   |
 
 ```go
@@ -251,6 +252,7 @@ consumer, err := NewConsumer(db, queueName, handler,
 		WithPollingInterval(2 * time.Second),
 		WithMaxParallelMessages(1),
 		WithMetrics(noop.Meter{}),
+		WithTracer(otel.Tracer("pgq")),
 	)
 ```
 
