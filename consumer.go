@@ -20,11 +20,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
 	"github.com/joschi/pgq/internal/pg"
@@ -107,6 +106,7 @@ type consumerConfig struct {
 	FiniteConsumption bool
 
 	Logger *slog.Logger
+	Tracer trace.Tracer
 }
 
 var noopLogger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.Level(math.MaxInt)}))
@@ -118,9 +118,10 @@ var defaultConsumerConfig = consumerConfig{
 	MessageProcessingReserveDuration: 1 * time.Second,
 	MaxParallelMessages:              1,
 	InvalidMessageCallback:           func(context.Context, InvalidMessage, error) {},
-	Metrics:                          noop.Meter{},
 	MaxConsumeCount:                  3,
 	Logger:                           noopLogger,
+	Metrics:                          noopMeter,
+	Tracer:                           noopTracer,
 }
 
 // InvalidMessageCallback defines what should happen to messages which are identified as invalid.
@@ -142,6 +143,7 @@ type Consumer struct {
 	handler   MessageHandler
 	metrics   *metrics
 	sem       *semaphore.Weighted
+	tracer    trace.Tracer
 }
 
 // ConsumerOption applies option to consumerConfig.
@@ -227,6 +229,13 @@ func WithLogger(logger *slog.Logger) ConsumerOption {
 	}
 }
 
+// WithTracer sets the OpenTelemetry tracer. Default is no tracing.
+func WithTracer(tracer trace.Tracer) ConsumerOption {
+	return func(c *consumerConfig) {
+		c.Tracer = tracer
+	}
+}
+
 // WithStopOnEmptyQueue sets whether the consumer should run until no messages can be consumed.
 func WithStopOnEmptyQueue(finiteConsumption bool) ConsumerOption {
 	return func(c *consumerConfig) {
@@ -279,6 +288,7 @@ func NewConsumer(db *pgxpool.Pool, queueName string, handler MessageHandler, opt
 		handler:   handler,
 		metrics:   metrics,
 		sem:       sem,
+		tracer:    config.Tracer,
 	}, nil
 }
 
@@ -421,12 +431,11 @@ func (c *Consumer) handleMessage(ctx context.Context, msg *MessageIncoming) {
 	carrier := propagation.MapCarrier(msg.Metadata)
 	ctx = propagator.Extract(ctx, carrier)
 
-	ctx, span := otel.Tracer("pgq").Start(ctx, "HandleMessage")
+	ctx, span := c.tracer.Start(ctx, "HandleMessage", trace.WithAttributes(
+		keyMessageID.String(msg.id.String()),
+		keyQueueName.String(c.queueName),
+	))
 	defer span.End()
-	span.SetAttributes(
-		attribute.String("messageId", msg.id.String()),
-		attribute.String("queueName", c.queueName),
-	)
 
 	processed, err := c.handler.HandleMessage(ctx, msg)
 	if !processed {
@@ -717,16 +726,16 @@ func (c *Consumer) ackMessage(exec execer, msgID pgtype.UUID) func(ctx context.C
 		if _, err := exec.Exec(ctx, query, msgID); err != nil {
 			c.metrics.failedProcessingCounter.Add(ctx, 1,
 				metric.WithAttributes(
-					attribute.String("resolution", "ack"),
-					attribute.String("queue_name", c.queueName),
+					keyResolution.String("ack"),
+					keyQueueName.String(c.queueName),
 				),
 			)
 			return errors.WithStack(err)
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
-				attribute.String("resolution", "ack"),
-				attribute.String("queue_name", c.queueName),
+				keyResolution.String("ack"),
+				keyQueueName.String(c.queueName),
 			),
 		)
 		return nil
@@ -739,16 +748,16 @@ func (c *Consumer) nackMessage(exec execer, msgID pgtype.UUID) func(ctx context.
 		if _, err := exec.Exec(ctx, query, msgID, reason); err != nil {
 			c.metrics.failedProcessingCounter.Add(ctx, 1,
 				metric.WithAttributes(
-					attribute.String("resolution", "nack"),
-					attribute.String("queue_name", c.queueName),
+					keyResolution.String("nack"),
+					keyQueueName.String(c.queueName),
 				),
 			)
 			return errors.WithStack(err)
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
-				attribute.String("resolution", "nack"),
-				attribute.String("queue_name", c.queueName),
+				keyResolution.String("nack"),
+				keyQueueName.String(c.queueName),
 			),
 		)
 		return nil
@@ -761,16 +770,16 @@ func (c *Consumer) discardMessage(exec execer, msgID pgtype.UUID) func(ctx conte
 		if _, err := exec.Exec(ctx, query, msgID, reason); err != nil {
 			c.metrics.failedProcessingCounter.Add(ctx, 1,
 				metric.WithAttributes(
-					attribute.String("resolution", "discard"),
-					attribute.String("queue_name", c.queueName),
+					keyResolution.String("discard"),
+					keyQueueName.String(c.queueName),
 				),
 			)
 			return errors.WithStack(err)
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
-				attribute.String("resolution", "discard"),
-				attribute.String("queue_name", c.queueName),
+				keyResolution.String("discard"),
+				keyQueueName.String(c.queueName),
 			),
 		)
 		return nil

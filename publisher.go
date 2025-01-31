@@ -11,13 +11,17 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/joschi/pgq/internal/pg"
 )
 
 type publisher struct {
-	db  *pgxpool.Pool
-	cfg publisherConfig
+	db     *pgxpool.Pool
+	cfg    publisherConfig
+	tracer trace.Tracer
 }
 
 // Publisher publishes messages to Postgres queue.
@@ -52,23 +56,37 @@ func StaticMetaInjector(m Metadata) func(context.Context, Metadata) {
 
 // NewPublisher initializes the publisher with given *pgxpool.Pool client.
 func NewPublisher(db *pgxpool.Pool, opts ...PublisherOption) Publisher {
+	return NewInstrumentedPublisher(db, noopTracer, opts...)
+}
+
+// NewInstrumentedPublisher initializes the publisher with given *pgxpool.Pool client and OTel tracer.
+func NewInstrumentedPublisher(db *pgxpool.Pool, tracer trace.Tracer, opts ...PublisherOption) Publisher {
 	cfg := publisherConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	return &publisher{db: db, cfg: cfg}
+	return &publisher{db: db, tracer: tracer, cfg: cfg}
 }
 
 // Publish publishes the message.
 func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageOutgoing) (ids []uuid.UUID, err error) {
-	if len(msgs) < 1 {
+	messageCount := len(msgs)
+	ctx, span := d.tracer.Start(ctx, "pgq.Publish", trace.WithAttributes(
+		keyQueueName.String(queue),
+		attribute.Int("message_count", messageCount),
+	))
+	defer span.End()
+
+	if messageCount < 1 {
 		return []uuid.UUID{}, nil
 	}
-	query := buildInsertQuery(queue, len(msgs))
+	query := buildInsertQuery(queue, messageCount)
 	args := d.buildArgs(ctx, msgs)
 	// transaction is used to have secured read of query result.
 	tx, err := d.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, "couldn't start transaction")
 		return nil, errors.Wrap(err, "couldn't start transaction")
 	}
 	defer func() {
@@ -81,29 +99,43 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 			} else {
 				err = rErr
 			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 		if r != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			panic(r)
 		}
 	}()
 
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, errors.WithStack(err)
 	}
 	defer rows.Close()
-	ids = make([]uuid.UUID, 0, len(msgs))
+	ids = make([]uuid.UUID, 0, messageCount)
 	for rows.Next() {
 		var id pgtype.UUID
 		if err := rows.Scan(&id); err != nil {
+			uuidString := ""
+			_ = id.AssignTo(&uuidString)
+			span.RecordError(err, trace.WithAttributes(keyMessageID.String(uuidString)))
+			span.SetStatus(codes.Error, err.Error())
 			return nil, errors.WithStack(err)
 		}
 		ids = append(ids, id.Bytes)
 	}
 	if err := rows.Err(); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, errors.WithStack(err)
 	}
 	if err := tx.Commit(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return nil, errors.WithStack(err)
 	}
 	return ids, nil
