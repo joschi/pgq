@@ -56,23 +56,23 @@ func StaticMetaInjector(m Metadata) func(context.Context, Metadata) {
 
 // NewPublisher initializes the publisher with given *pgxpool.Pool client.
 func NewPublisher(db *pgxpool.Pool, opts ...PublisherOption) Publisher {
-	return NewInstrumentedPublisher(db, noopTracer, opts...)
+	return NewInstrumentedPublisher(db, noopTracerProvider, opts...)
 }
 
 // NewInstrumentedPublisher initializes the publisher with given *pgxpool.Pool client and OTel tracer.
-func NewInstrumentedPublisher(db *pgxpool.Pool, tracer trace.Tracer, opts ...PublisherOption) Publisher {
+func NewInstrumentedPublisher(db *pgxpool.Pool, tracerProvider trace.TracerProvider, opts ...PublisherOption) Publisher {
 	cfg := publisherConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
 	}
-	return &publisher{db: db, tracer: tracer, cfg: cfg}
+	return &publisher{db: db, tracer: tracerProvider.Tracer(otelScopeName), cfg: cfg}
 }
 
 // Publish publishes the message.
 func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageOutgoing) (ids []uuid.UUID, err error) {
 	messageCount := len(msgs)
 	ctx, span := d.tracer.Start(ctx, "pgq.Publish", trace.WithAttributes(
-		keyQueueName.String(queue),
+		attrQueueName.String(queue),
 		attribute.Int("message_count", messageCount),
 	))
 	defer span.End()
@@ -122,7 +122,7 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 		if err := rows.Scan(&id); err != nil {
 			uuidString := ""
 			_ = id.AssignTo(&uuidString)
-			span.RecordError(err, trace.WithAttributes(keyMessageID.String(uuidString)))
+			span.RecordError(err, trace.WithAttributes(attrMessageID.String(uuidString)))
 			span.SetStatus(codes.Error, err.Error())
 			return nil, errors.WithStack(err)
 		}
