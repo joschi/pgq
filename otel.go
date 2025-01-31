@@ -6,11 +6,16 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-var (
-	keyQueueName  = attribute.Key("queue_name")
-	keyMessageID  = attribute.Key("message_id")
-	keyResolution = attribute.Key("resolution")
+const (
+	// otelScopeName is the instrumentation scope name.
+	otelScopeName = "github.com/joschi/pgq"
+)
 
-	noopMeter  = metricnoop.NewMeterProvider().Meter("noop")
-	noopTracer = tracenoop.NewTracerProvider().Tracer("noop")
+var (
+	attrQueueName  = attribute.Key("queue_name")
+	attrMessageID  = attribute.Key("message_id")
+	attrResolution = attribute.Key("resolution")
+
+	noopMeterProvider  = metricnoop.NewMeterProvider()
+	noopTracerProvider = tracenoop.NewTracerProvider()
 )

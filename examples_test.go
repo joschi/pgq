@@ -22,7 +22,7 @@ func ExampleNewConsumer() {
 		pgq.WithAckTimeout(5*time.Second),
 		pgq.WithMessageProcessingReserveDuration(5*time.Second),
 		pgq.WithMaxParallelMessages(42),
-		pgq.WithMetrics(noop.Meter{}),
+		pgq.WithMeterProvider(noop.NewMeterProvider()),
 		pgq.WithHistoryLimit(24*time.Hour),
 		pgq.WithLogger(slogger),
 		pgq.WithInvalidMessageCallback(func(ctx context.Context, msg pgq.InvalidMessage, err error) {

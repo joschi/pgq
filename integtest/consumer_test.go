@@ -57,7 +57,7 @@ func TestConsumer_Run_graceful_shutdown(t *testing.T) {
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
 		}),
-		WithMetrics(noop.Meter{}),
+		WithMeterProvider(noop.NewMeterProvider()),
 	)
 	require.NoError(t, err)
 
@@ -133,7 +133,7 @@ func TestConsumer_Run_FutureMessage(t *testing.T) {
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
 		}),
-		WithMetrics(noop.Meter{}),
+		WithMeterProvider(noop.NewMeterProvider()),
 	)
 	require.NoError(t, err)
 
@@ -207,7 +207,7 @@ func TestConsumer_Run_MetadataFilter_Equal(t *testing.T) {
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
 		}),
-		WithMetrics(noop.Meter{}),
+		WithMeterProvider(noop.NewMeterProvider()),
 	)
 	require.NoError(t, err)
 
@@ -281,7 +281,7 @@ func TestConsumer_Run_MetadataFilter_NotEqual(t *testing.T) {
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
 		}),
-		WithMetrics(noop.Meter{}),
+		WithMeterProvider(noop.NewMeterProvider()),
 	)
 	require.NoError(t, err)
 
@@ -350,7 +350,7 @@ func TestConsumer_Continue_After_Error(t *testing.T) {
 		WithInvalidMessageCallback(func(_ context.Context, _ InvalidMessage, err error) {
 			require.NoError(t, err)
 		}),
-		WithMetrics(noop.Meter{}),
+		WithMeterProvider(noop.NewMeterProvider()),
 	)
 	require.NoError(t, err)
 
