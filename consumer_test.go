@@ -86,6 +86,7 @@ func TestConsumer_generateQuery(t *testing.T) {
 			got, err := c.generateQuery()
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got.String())
+			require.Equal(t, tt.args.queueName, c.QueueName())
 		})
 	}
 }
