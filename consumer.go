@@ -363,6 +363,10 @@ func (c *Consumer) Run(ctx context.Context) error {
 	}
 }
 
+func (c *Consumer) QueueName() string {
+	return c.queueName
+}
+
 func (c *Consumer) verifyTable(ctx context.Context) error {
 	// --- (1) ----
 	// Validate the queue mandatory fields
