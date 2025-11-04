@@ -75,6 +75,6 @@ func TestMessageIncoming_SetDeadline(t *testing.T) {
 	require.NoError(t, err)
 	ctx, err = m.SetDeadline(ctx, time.Now())
 	require.NoError(t, err)
-	ctx, err = m.SetDeadline(ctx, time.Now())
+	_, err = m.SetDeadline(ctx, time.Now())
 	require.Error(t, err)
 }
