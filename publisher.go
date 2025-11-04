@@ -27,6 +27,7 @@ type publisher struct {
 // Publisher publishes messages to Postgres queue.
 type Publisher interface {
 	Publish(ctx context.Context, queue string, msg ...*MessageOutgoing) ([]uuid.UUID, error)
+	PublishInTx(ctx context.Context, tx pgx.Tx, queue string, msgs ...*MessageOutgoing) ([]uuid.UUID, error)
 }
 
 type publisherConfig struct {
@@ -77,11 +78,6 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 	))
 	defer span.End()
 
-	if messageCount < 1 {
-		return []uuid.UUID{}, nil
-	}
-	query := buildInsertQuery(queue, messageCount)
-	args := d.buildArgs(ctx, msgs)
 	// transaction is used to have secured read of query result.
 	tx, err := d.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
@@ -109,6 +105,38 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 		}
 	}()
 
+	ids, err = d.publish(ctx, span, tx, queue, msgs...)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, errors.WithStack(err)
+	}
+	return ids, nil
+}
+
+// PublishInTx publishes the message in an existing transaction.
+func (d *publisher) PublishInTx(ctx context.Context, tx pgx.Tx, queue string, msgs ...*MessageOutgoing) (ids []uuid.UUID, err error) {
+	messageCount := len(msgs)
+	ctx, span := d.tracer.Start(ctx, "pgq.PublishInTx", trace.WithAttributes(
+		attrQueueName.String(queue),
+		attribute.Int("message_count", messageCount),
+	))
+	defer span.End()
+
+	return d.publish(ctx, span, tx, queue, msgs...)
+}
+
+func (d *publisher) publish(ctx context.Context, span trace.Span, tx pgx.Tx, queue string, msgs ...*MessageOutgoing) (ids []uuid.UUID, err error) {
+	messageCount := len(msgs)
+	if messageCount < 1 {
+		return []uuid.UUID{}, nil
+	}
+	query := buildInsertQuery(queue, messageCount)
+	args := d.buildArgs(ctx, msgs)
 	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		span.RecordError(err)
@@ -133,11 +161,6 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 		span.SetStatus(codes.Error, err.Error())
 		return nil, errors.WithStack(err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		return nil, errors.WithStack(err)
-	}
 	return ids, nil
 }
 
@@ -149,7 +172,7 @@ func buildInsertQuery(queue string, msgCount int) string {
 	sb.WriteString(dbFieldsString)
 	sb.WriteString(") VALUES ")
 	var params pg.StmtParams
-	for rowIdx := 0; rowIdx < msgCount; rowIdx++ {
+	for rowIdx := range msgCount {
 		if rowIdx != 0 {
 			sb.WriteString(",")
 		}
