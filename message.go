@@ -27,7 +27,7 @@ func init() {
 
 	// Count fields in MessageOutgoing struct. Used for dynamically building the
 	// queries
-	t := reflect.TypeOf(MessageOutgoing{})
+	t := reflect.TypeFor[MessageOutgoing]()
 	fieldCountPerMessageOutgoing = t.NumField()
 
 	// Get field names in MessageOutgoing struct. Used for dynamically building the
@@ -169,7 +169,7 @@ func (m *MessageIncoming) discard(ctx context.Context, reason string) error {
 // buildColumnListFromTags dynamically constructs a list of column names based
 // on the `db` struct tags of any given struct. It returns a slice of strings
 // containing the column names.
-func buildColumnListFromTags(data interface{}) ([]string, error) {
+func buildColumnListFromTags(data any) ([]string, error) {
 	// Ensure that 'data' is a struct
 	t := reflect.TypeOf(data)
 	if t.Kind() != reflect.Struct {

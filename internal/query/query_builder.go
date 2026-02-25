@@ -3,6 +3,7 @@ package query
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -31,12 +32,7 @@ func (qb *Builder) WriteString(part string) {
 
 // HasParam checks whether the Builder has a parameter of the given name.
 func (qb *Builder) HasParam(name string) bool {
-	for _, paramName := range qb.params {
-		if paramName == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(qb.params, name)
 }
 
 func (qb *Builder) String() string {
@@ -44,7 +40,7 @@ func (qb *Builder) String() string {
 }
 
 // Build returns the query string with the parameters replaced by the values from the provided map.
-func (qb *Builder) Build(params map[string]interface{}) (string, error) {
+func (qb *Builder) Build(params map[string]any) (string, error) {
 	// Validate that the params map includes all parameter names from qb.params
 	for _, paramName := range qb.params {
 		if _, exists := params[paramName]; !exists {
