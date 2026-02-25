@@ -139,6 +139,5 @@ func checkIndexData(ctx context.Context, db *pgxpool.Pool, queueName string) (bo
 	if err := rows.Err(); err != nil {
 		return false, fmt.Errorf("reading index schema of queue table: %w", err)
 	}
-	rows.Close()
 	return allMandatoryColumnsAreIndexed, nil
 }
