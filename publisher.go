@@ -95,12 +95,12 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 			} else {
 				err = rErr
 			}
+		}
+		if err != nil {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
 		}
 		if r != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
 			panic(r)
 		}
 	}()
