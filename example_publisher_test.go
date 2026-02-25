@@ -26,7 +26,7 @@ func ExamplePublisher() {
 	}
 	defer pool.Close()
 	const queueName = "test_queue"
-	p := pgq.NewPublisher(db)
+	p := pgq.NewPublisher(pool)
 	payload, _ := json.Marshal(PayloadStruct{Foo: "bar"})
 	messages := []*pgq.MessageOutgoing{
 		{
