@@ -32,7 +32,7 @@ func ErrorIs(t testing.TB, err error, target error) {
 }
 
 // Equal fails the test if expected is not equal to actual.
-func Equal(t testing.TB, expected interface{}, actual interface{}) {
+func Equal(t testing.TB, expected any, actual any) {
 	t.Helper()
 	if !reflect.DeepEqual(expected, actual) {
 		t.Fatalf("expected:\n\t%[1]T(%#[1]v)\ngot:\n\t%[2]T(%#[2]v)", expected, actual)
