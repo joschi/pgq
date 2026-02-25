@@ -510,9 +510,6 @@ func (c *Consumer) consumeMessages(ctx context.Context, query *query.Builder) ([
 			if c.cfg.FiniteConsumption && errors.Is(err, pgx.ErrNoRows) {
 				return nil, io.EOF
 			}
-			if c.cfg.FiniteConsumption && errors.Is(err, pgx.ErrNoRows) {
-				return nil, io.EOF
-			}
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return nil, errors.WithStack(err)
 			}
