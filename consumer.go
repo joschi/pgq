@@ -261,11 +261,13 @@ const (
 func WithMetadataFilter(filter *MetadataFilter) ConsumerOption {
 	return func(c *consumerConfig) {
 		filters := c.MetadataFilters
-		if filter == nil {
+		if filters == nil {
 			filters = make([]MetadataFilter, 0, 1)
 		}
 
-		c.MetadataFilters = append(filters, *filter)
+		if filter != nil {
+			c.MetadataFilters = append(filters, *filter)
+		}
 	}
 }
 
