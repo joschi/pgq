@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -148,8 +148,7 @@ func (d *publisher) publish(ctx context.Context, span trace.Span, tx pgx.Tx, que
 	for rows.Next() {
 		var id pgtype.UUID
 		if err := rows.Scan(&id); err != nil {
-			uuidString := ""
-			_ = id.AssignTo(&uuidString)
+			uuidString := uuid.UUID(id.Bytes).String()
 			span.RecordError(err, trace.WithAttributes(attrMessageID.String(uuidString)))
 			span.SetStatus(codes.Error, err.Error())
 			return nil, err
