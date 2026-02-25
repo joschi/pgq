@@ -2,9 +2,10 @@ package pgq
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pkg/errors"
 )
 
 const columnSelect = `SELECT column_name
@@ -74,7 +75,7 @@ func ValidateFields(ctx context.Context, db *pgxpool.Pool, queueName string) err
 	// if there is at least one mandatory field missing in the schema then this queue is invalid.
 	// TODO: Add some more logic to maybe indicate which field is the one that need to be included
 	if len(missingColumns) > 1 {
-		return errors.Errorf("some PGQ columns are missing: %v", missingColumns)
+		return fmt.Errorf("some PGQ columns are missing: %v", missingColumns)
 	}
 
 	// TODO log extra columns in queue table or ignore them?
@@ -96,7 +97,7 @@ func ValidateIndexes(ctx context.Context, db *pgxpool.Pool, queueName string) er
 
 	// Check if we found all the mandatory indexes were found. If even 1 is missing, then we return an error
 	if !found {
-		return errors.Errorf("some PGQ indexes are missing or invalid")
+		return errors.New("some PGQ indexes are missing or invalid")
 	}
 	return nil
 }
@@ -104,7 +105,7 @@ func ValidateIndexes(ctx context.Context, db *pgxpool.Pool, queueName string) er
 func getColumnData(ctx context.Context, db *pgxpool.Pool, queueName string) (map[string]struct{}, error) {
 	rows, err := db.Query(ctx, columnSelect, queueName)
 	if err != nil {
-		return nil, errors.Wrap(err, "querying schema of queue table")
+		return nil, fmt.Errorf("querying schema of queue table: %w", err)
 	}
 	defer func() { rows.Close() }()
 
@@ -112,12 +113,12 @@ func getColumnData(ctx context.Context, db *pgxpool.Pool, queueName string) (map
 	for rows.Next() {
 		var s string
 		if err := rows.Scan(&s); err != nil {
-			return nil, errors.Wrap(err, "reading schema row of queue table")
+			return nil, fmt.Errorf("reading schema row of queue table: %w", err)
 		}
 		columns[s] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errors.Wrap(err, "reading schema of queue table")
+		return nil, fmt.Errorf("reading schema of queue table: %w", err)
 	}
 	return columns, nil
 }
@@ -125,18 +126,18 @@ func getColumnData(ctx context.Context, db *pgxpool.Pool, queueName string) (map
 func checkIndexData(ctx context.Context, db *pgxpool.Pool, queueName string) (bool, error) {
 	rows, err := db.Query(ctx, indexSelect, queueName, mandatoryIndexes)
 	if err != nil {
-		return false, errors.Wrap(err, "querying index schema of queue table")
+		return false, fmt.Errorf("querying index schema of queue table: %w", err)
 	}
 	defer func() { rows.Close() }()
 
 	var allMandatoryColumnsAreIndexed bool
 	for rows.Next() {
 		if err := rows.Scan(&allMandatoryColumnsAreIndexed); err != nil {
-			return false, errors.Wrap(err, "reading index schema row of queue table")
+			return false, fmt.Errorf("reading index schema row of queue table: %w", err)
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return false, errors.Wrap(err, "reading index schema of queue table")
+		return false, fmt.Errorf("reading index schema of queue table: %w", err)
 	}
 	rows.Close()
 	return allMandatoryColumnsAreIndexed, nil

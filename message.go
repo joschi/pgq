@@ -3,6 +3,7 @@ package pgq
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -10,7 +11,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/pkg/errors"
 )
 
 // Metadata is message Metadata definition.
@@ -122,7 +122,7 @@ func (m *MessageIncoming) SetDeadline(ctx context.Context, deadline time.Time) (
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	if err := m.updateLockedUntilFn(ctx, deadline); err != nil {
 		cancel()
-		return nil, errors.Wrap(err, "setting deadline in the database")
+		return nil, fmt.Errorf("setting deadline in the database: %w", err)
 	}
 	m.Deadline = deadline
 	m.cancelCtx = cancel
