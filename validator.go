@@ -74,7 +74,7 @@ func ValidateFields(ctx context.Context, db *pgxpool.Pool, queueName string) err
 	// If all the mandatory fields have been found then we don't need to return an error. However,
 	// if there is at least one mandatory field missing in the schema then this queue is invalid.
 	// TODO: Add some more logic to maybe indicate which field is the one that need to be included
-	if len(missingColumns) > 1 {
+	if len(missingColumns) > 0 {
 		return fmt.Errorf("some PGQ columns are missing: %v", missingColumns)
 	}
 
