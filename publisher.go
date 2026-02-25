@@ -2,7 +2,8 @@ package pgq
 
 import (
 	"context"
-	stderrors "errors"
+	"errors"
+	"fmt"
 	"maps"
 	"strings"
 
@@ -10,7 +11,6 @@ import (
 	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
@@ -83,7 +83,7 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, "couldn't start transaction")
-		return nil, errors.Wrap(err, "couldn't start transaction")
+		return nil, fmt.Errorf("couldn't start transaction: %w", err)
 	}
 	defer func() {
 		r := recover()
@@ -91,7 +91,7 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 		if rErr != nil && !errors.Is(rErr, pgx.ErrTxClosed) {
 			if err != nil {
 				// this is tricky, but we want to return both errors
-				err = stderrors.Join(err, rErr)
+				err = errors.Join(err, rErr)
 			} else {
 				err = rErr
 			}
@@ -113,7 +113,7 @@ func (d *publisher) Publish(ctx context.Context, queue string, msgs ...*MessageO
 	if err := tx.Commit(ctx); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return ids, nil
 }
@@ -141,7 +141,7 @@ func (d *publisher) publish(ctx context.Context, span trace.Span, tx pgx.Tx, que
 	if err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	defer rows.Close()
 	ids = make([]uuid.UUID, 0, messageCount)
@@ -152,14 +152,14 @@ func (d *publisher) publish(ctx context.Context, span trace.Span, tx pgx.Tx, que
 			_ = id.AssignTo(&uuidString)
 			span.RecordError(err, trace.WithAttributes(attrMessageID.String(uuidString)))
 			span.SetStatus(codes.Error, err.Error())
-			return nil, errors.WithStack(err)
+			return nil, err
 		}
 		ids = append(ids, id.Bytes)
 	}
 	if err := rows.Err(); err != nil {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return ids, nil
 }

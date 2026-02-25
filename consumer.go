@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -18,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/pkg/errors"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
@@ -281,7 +281,7 @@ func NewConsumer(db *pgxpool.Pool, queueName string, handler MessageHandler, opt
 	meter := config.MetricProvider.Meter(otelScopeName)
 	processMetrics, err := prepareProcessMetrics(queueName, meter)
 	if err != nil {
-		return nil, errors.Wrap(err, "registering process metrics")
+		return nil, fmt.Errorf("registering process metrics: %w", err)
 	}
 	sem := semaphore.NewWeighted(int64(config.MaxParallelMessages))
 	tracer := config.TracerProvider.Tracer(otelScopeName)
@@ -310,14 +310,14 @@ func prepareProcessMetrics(queueName string, meter metric.Meter) (*metrics, erro
 		metric.WithDescription("Total number of processed jobs. The label 'resolution' says how the job was handled."),
 	)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	failedProcessingCounter, err := meter.Int64Counter(
 		fmt.Sprintf("pgq_%s_failed_job_processing", queueName),
 		metric.WithDescription("Total number of errors during marking a job as processed. Example is a failed job ACK. This metric signals a chance of inconsistencies in the queue."),
 	)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return &metrics{
 		jobsCounter:             jobsCounter,
@@ -331,11 +331,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 		"inputQueue", c.queueName,
 	)
 	if err := c.verifyTable(ctx); err != nil {
-		return errors.Wrap(err, "verifying table")
+		return fmt.Errorf("verifying table: %w", err)
 	}
 	query, err := c.generateQuery()
 	if err != nil {
-		return errors.Wrap(err, "generating query")
+		return fmt.Errorf("generating query: %w", err)
 	}
 
 	var wg sync.WaitGroup
@@ -350,7 +350,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 				return io.EOF
 			}
 			if errors.As(err, &fatalError{}) {
-				return errors.Wrapf(err, "consuming from PostgreSQL queue %s", c.queueName)
+				return fmt.Errorf("consuming from PostgreSQL queue %s: %w", c.queueName, err)
 			}
 			c.cfg.Logger.InfoContext(ctx, "pgq: consume failed, will retry",
 				"error", err,
@@ -377,14 +377,14 @@ func (c *Consumer) verifyTable(ctx context.Context) error {
 	// Validate the queue mandatory fields
 	err := ValidateFields(ctx, c.db, c.queueName)
 	if err != nil {
-		return errors.Wrap(err, "error validating queue mandatory fields")
+		return fmt.Errorf("error validating queue mandatory fields: %w", err)
 	}
 
 	// --- (2) ----
 	// Validate the queue mandatory indexes
 	err = ValidateIndexes(ctx, c.db, c.queueName)
 	if err != nil {
-		return errors.Wrap(err, "error validating queue mandatory indexes")
+		return fmt.Errorf("error validating queue mandatory indexes: %w", err)
 	}
 
 	return nil
@@ -505,7 +505,7 @@ func (c *Consumer) consumeMessages(ctx context.Context, query *query.Builder) ([
 	for {
 		maxMsg, err := acquireMaxFromSemaphore(ctx, c.sem, int64(c.cfg.MaxParallelMessages))
 		if err != nil {
-			return nil, fatalError{Err: errors.WithStack(err)}
+			return nil, fatalError{Err: err}
 		}
 		msgs, err := c.tryConsumeMessages(ctx, query, maxMsg)
 		if err != nil {
@@ -514,7 +514,7 @@ func (c *Consumer) consumeMessages(ctx context.Context, query *query.Builder) ([
 				return nil, io.EOF
 			}
 			if !errors.Is(err, pgx.ErrNoRows) {
-				return nil, errors.WithStack(err)
+				return nil, err
 			}
 			select {
 			case <-ctx.Done():
@@ -541,7 +541,7 @@ func (c *Consumer) tryConsumeMessages(ctx context.Context, query *query.Builder,
 	tx, err := c.db.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		// TODO not necessary fatal, network could wiggle.
-		return nil, fatalError{Err: errors.WithStack(err)}
+		return nil, fatalError{Err: err}
 	}
 	defer func() {
 		txRollbackErr := tx.Rollback(ctx)
@@ -582,7 +582,7 @@ func (c *Consumer) tryConsumeMessages(ctx context.Context, query *query.Builder,
 
 	queryString, err := query.Build(namedParams)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
 	rows, err := tx.Query(ctx, queryString, namedParams)
@@ -590,7 +590,7 @@ func (c *Consumer) tryConsumeMessages(ctx context.Context, query *query.Builder,
 		if isErrorCode(err, undefinedColumnErrCode) {
 			return nil, fatalError{Err: err}
 		}
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	defer rows.Close()
 
@@ -598,18 +598,18 @@ func (c *Consumer) tryConsumeMessages(ctx context.Context, query *query.Builder,
 	for rows.Next() {
 		msg, err := c.parseRow(ctx, rows)
 		if err != nil {
-			return nil, errors.WithStack(err)
+			return nil, err
 		}
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	if len(msgs) == 0 {
 		return nil, pgx.ErrNoRows
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, errors.Wrap(err, "commit message consumption")
+		return nil, fmt.Errorf("commit message consumption: %w", err)
 	}
 	return msgs, nil
 }
@@ -626,7 +626,7 @@ func (c *Consumer) parseRow(ctx context.Context, rows pgx.Rows) (*MessageIncomin
 		if isErrorCode(err, undefinedTableErrCode, undefinedColumnErrCode) {
 			return nil, fatalError{Err: err}
 		}
-		return nil, errors.Wrap(err, "retrieving message")
+		return nil, fmt.Errorf("retrieving message: %w", err)
 	}
 	msg, err := c.finishParsing(pgMsg)
 	if err != nil {
@@ -637,7 +637,7 @@ func (c *Consumer) parseRow(ctx context.Context, rows pgx.Rows) (*MessageIncomin
 			Metadata: pgMsg.Metadata.Bytes,
 			Payload:  pgMsg.Payload.Bytes,
 		}, err)
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 	return msg, nil
 }
@@ -683,11 +683,11 @@ func (c *Consumer) finishParsing(pgMsg pgMessage) (*MessageIncoming, error) {
 	var err error
 	msg.Payload, err = parsePayload(pgMsg)
 	if err != nil {
-		return msg, errors.Wrap(err, "parsing payload")
+		return msg, fmt.Errorf("parsing payload: %w", err)
 	}
 	msg.Metadata, err = parseMetadata(pgMsg)
 	if err != nil {
-		return msg, errors.Wrap(err, "parsing metadata")
+		return msg, fmt.Errorf("parsing metadata: %w", err)
 	}
 	msg.Attempt = int(pgMsg.Attempt.Int)
 	msg.maxConsumedCount = c.cfg.MaxConsumeCount
@@ -714,7 +714,7 @@ func parseMetadata(pgMsg pgMessage) (map[string]string, error) {
 		if !isJSONObject(pgMsg.Metadata.Bytes) {
 			return nil, errors.New("metadata is invalid JSON object")
 		}
-		return nil, errors.Wrap(err, "parsing metadata")
+		return nil, fmt.Errorf("parsing metadata: %w", err)
 	}
 	return m, nil
 }
@@ -742,7 +742,7 @@ func (c *Consumer) ackMessage(exec execer, msgID pgtype.UUID) func(ctx context.C
 					attrQueueName.String(c.queueName),
 				),
 			)
-			return errors.WithStack(err)
+			return err
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
@@ -764,7 +764,7 @@ func (c *Consumer) nackMessage(exec execer, msgID pgtype.UUID) func(ctx context.
 					attrQueueName.String(c.queueName),
 				),
 			)
-			return errors.WithStack(err)
+			return err
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
@@ -786,7 +786,7 @@ func (c *Consumer) discardMessage(exec execer, msgID pgtype.UUID) func(ctx conte
 					attrQueueName.String(c.queueName),
 				),
 			)
-			return errors.WithStack(err)
+			return err
 		}
 		c.metrics.jobsCounter.Add(ctx, 1,
 			metric.WithAttributes(
@@ -802,7 +802,7 @@ func (c *Consumer) updateLockedUntil(exec execer, id pgtype.UUID) func(context.C
 	query := `UPDATE ` + pg.QuoteIdentifier(c.queueName) + ` SET locked_until = $2 WHERE id = $1`
 	return func(ctx context.Context, lockedUntil time.Time) error {
 		_, err := exec.Exec(ctx, query, id, lockedUntil)
-		return errors.WithStack(err)
+		return err
 	}
 }
 
