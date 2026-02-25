@@ -214,7 +214,7 @@ func WithHistoryLimit(d time.Duration) ConsumerOption {
 // WithMaxConsumeCount sets the maximal number of times a message can be consumed before it is ignored.
 // Unhandled SIGKILL or uncaught panic, OOM error etc. could lead to consumer failure infinite loop.
 // Setting this value to greater than 0 will prevent happening this loop.
-// Setting this to value 0 disableS this safe mechanism.
+// Setting this to value 0 disables this safe mechanism.
 func WithMaxConsumeCount(max uint) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.MaxConsumeCount = max
