@@ -117,7 +117,7 @@ var ErrInvalidDeadline = errors.New("deadline can't be prolonged")
 //	LockedUntil - (AckTimeout + MessageProcessingReserveDuration)
 func (m *MessageIncoming) SetDeadline(ctx context.Context, deadline time.Time) (context.Context, error) {
 	if deadline.After(m.Deadline) {
-		return nil, ErrInvalidDeadline
+		return ctx, ErrInvalidDeadline
 	}
 	ctx, cancel := context.WithDeadline(ctx, deadline)
 	if err := m.updateLockedUntilFn(ctx, deadline); err != nil {
