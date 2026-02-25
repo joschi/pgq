@@ -341,6 +341,9 @@ func (c *Consumer) Run(ctx context.Context) error {
 	var wg sync.WaitGroup
 	defer wg.Wait() // wait for handlers to finish
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		msgs, err := c.consumeMessages(ctx, query)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
