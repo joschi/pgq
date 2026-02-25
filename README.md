@@ -61,6 +61,11 @@ Pgq is intended to replace the specialized message brokers in environments where
 - Publishers add new rows to the queue table.
 - Consumers update the pgq mandatory fields of the rows in the queue table.
 
+## Requirements
+
+- Go 1.25 or later
+- PostgreSQL
+
 ## Installation
 To install PGQ, use the go get command:
 ```
@@ -148,6 +153,15 @@ func main() {
 
 After the message is successfully published, you can see the new row with given `msgId` in the queue table.
 
+`Publisher` is an interface with two methods:
+- `Publish(ctx, queue, msgs...)` — publishes messages in a new transaction.
+- `PublishInTx(ctx, tx, queue, msgs...)` — publishes messages in an existing transaction, useful when you need to publish as part of a larger transactional operation.
+
+You can also create an instrumented publisher with OpenTelemetry tracing support:
+```go
+publisher := pgq.NewInstrumentedPublisher(db, tracerProvider)
+```
+
 ### Publisher options
 
 Very often you want some metadata to be part of the message, so you can filter the messages in the queue table by it.
@@ -157,8 +171,8 @@ It can be the publisher app name/version, payload schema version, customer ident
 You can simply attach the metadata to single message by:
 ```go
 metadata := pgq.Metadata{
-	"publisherHost": "localhost",
-	"payloadVersion": "v1.0"
+	"publisherHost":  "localhost",
+	"payloadVersion": "v1.0",
 }
 ```
 
@@ -168,16 +182,16 @@ opts := []pgq.PublisherOption{
 	pgq.WithMetaInjectors(
 		pgq.StaticMetaInjector(
 			pgq.Metadata{
-				"publisherHost": "localhost",
-				"publisherVersion": "commitRSA"
-			}
+				"publisherHost":    "localhost",
+				"publisherVersion": "commitRSA",
+			},
 		),
 	),
-},
+}
 
-publisher := pgq.NewPublisher(db, opts)
+publisher := pgq.NewPublisher(db, opts...)
 metadata := pgq.Metadata{
-	"payloadVersion": "v1.0" // message specific meta field
+	"payloadVersion": "v1.0", // message specific meta field
 }
 ```
 
@@ -233,17 +247,21 @@ func (h *handler) HandleMessage(_ context.Context, msg *pgq.MessageIncoming) (pr
 
 You can configure the consumer by passing the optional `ConsumeOptions` when creating it.
 
-| Option                     | Description                                                                                                                                                                                                                                                                             |
-|:---------------------------|:----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| WithLogger                 | Provide your own `*slog.Logger` to have the pgq logs under control                                                                                                                                                                                                                      |
-| WithMaxParallelMessages    | Set how many consumers you want to run concurrently in your app.                                                                                                                                                                                                                        |
-| WithLockDuration           | You can set your own locks effective duration according to your needs `time.Duration`. If you handle messages quickly, set the duration in seconds/minutes. If you play with long-duration jobs it makes sense to set this to bigger value than your longest job takes to be processed. |
-| WithPollingInterval        | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                   |
-| WithInvalidMessageCallback | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                                |
-| WithHistoryLimit           | how far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though the are unprocessed.                                                                                                                            |
-| WithMeterProvider          | No problem to attach your own OpenTelemetry meter provider here.                                                                                                                                                                                                                        |
-| WithTracerProvider         | No problem to attach your own OpenTelemetry tracer provider here.                                                                                                                                                                                                                       |
-| WithMetadataFilter         | Allows to filter consumed message. At this point OpEqual and OpNotEqual are supported                                                                                                                                                                                                   |
+| Option                                | Description                                                                                                                                                                                                                                                                           |
+|:--------------------------------------|:--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| WithLogger                            | Provide your own `*slog.Logger` to have the pgq logs under control.                                                                                                                                                                                                                  |
+| WithMaxParallelMessages               | Set how many consumers you want to run concurrently in your app.                                                                                                                                                                                                                      |
+| WithLockDuration                      | You can set your own lock effective duration according to your needs `time.Duration`. If you handle messages quickly, set the duration in seconds/minutes. If you play with long-duration jobs it makes sense to set this to bigger value than your longest job takes to be processed. |
+| WithPollingInterval                   | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                 |
+| WithAckTimeout                        | Sets the timeout for updating the message status when a message is processed `[time.Duration]`.                                                                                                                                                                                       |
+| WithMaxConsumeCount                   | Sets the maximal number of times a message can be consumed before it is discarded. Prevents infinite processing loops caused by OOM errors, uncaught panics, etc. Set to 0 to disable.                                                                                                |
+| WithMessageProcessingReserveDuration  | Sets the duration reserved for handling the message result state (ack/nack) after processing `[time.Duration]`.                                                                                                                                                                       |
+| WithStopOnEmptyQueue                  | When set to true, the consumer stops after the queue is empty instead of continuing to poll.                                                                                                                                                                                          |
+| WithInvalidMessageCallback            | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                              |
+| WithHistoryLimit                      | How far in the history you want to search for messages in the queue. Sometimes you want to ignore messages created days ago even though they are unprocessed.                                                                                                                         |
+| WithMeterProvider                     | Attach your own OpenTelemetry meter provider.                                                                                                                                                                                                                                         |
+| WithTracerProvider                    | Attach your own OpenTelemetry tracer provider.                                                                                                                                                                                                                                        |
+| WithMetadataFilter                    | Allows to filter consumed messages. `OpEqual` and `OpNotEqual` operations are supported.                                                                                                                                                                                              |
 
 ```go
 consumer, err := NewConsumer(db, queueName, handler,
@@ -256,7 +274,27 @@ consumer, err := NewConsumer(db, queueName, handler,
 	)
 ```
 
-For more detailed usage examples and API documentation, please refer to the <a href="https://pkg.go.dev/github.com/joschi/pgq" target="_blank">Dataddo pgq GoDoc page</a>.
+For more detailed usage examples and API documentation, please refer to the <a href="https://pkg.go.dev/github.com/joschi/pgq" target="_blank">pgq GoDoc page</a>.
+
+### Message handling helpers
+
+The `MessageIncoming` type provides several useful methods inside your handler:
+
+- `msg.LastAttempt()` — returns `true` if this is the last attempt before the message gets discarded (based on `WithMaxConsumeCount`).
+- `msg.SetTimeout(ctx, duration)` — shortens the processing deadline by the given duration. Returns `ErrInvalidDeadline` if the new deadline would exceed the original lock.
+- `msg.SetDeadline(ctx, time)` — sets an exact deadline for processing. Returns `ErrInvalidDeadline` if the new deadline would exceed the original lock.
+
+### Schema validation
+
+You can validate that a queue table has the required columns and indexes before using it:
+
+```go
+// Validate that the table has all required pgq columns
+err := pgq.ValidateFields(ctx, db, "my_queue")
+
+// Validate that the table has the recommended indexes
+err := pgq.ValidateIndexes(ctx, db, "my_queue")
+```
 
 ## Message
 
@@ -291,11 +329,11 @@ select count(*) from queue_name where processed_at is null and locked_until is n
 ### Messages currently being processed
 Get the messages being processed at the moment.
 ```sql
-select * from queue_name where processed_at is null and locked_until is null;
+select * from queue_name where processed_at is null and locked_until is not null;
 ```
 Get the number of messages currently being processed. Another good candidate for metric in your monitoring system.
 ```sql
-select count(*) from queue_name where processed_at is null and locked_until is null;
+select count(*) from queue_name where processed_at is null and locked_until is not null;
 ```
 
 _Tip: You can use the `pgq` table as a source for your monitoring system and enable alerting for suspicious values. It is usually good not to monitor only the peak size but also the empty queues, which may indicate some troubles on publishers side._
@@ -349,11 +387,13 @@ When postgres lacks the indexes, it can very negatively influence the performanc
 
 Each queue table should have at least the following indexes:
 ```sql
-CREATE INDEX IDX_CREATED_AT ON my_queue_name (created_at);
-CREATE INDEX IDX_PROCESSED_AT_CONSUMED_COUNT ON my_queue_name (consumed_count, processed_at) WHERE (processed_at IS NULL);
+CREATE INDEX idx_created_at ON my_queue_name (created_at);
+CREATE INDEX idx_processed_at_null ON my_queue_name (processed_at) WHERE (processed_at IS NULL);
+CREATE INDEX idx_scheduled_for ON my_queue_name (scheduled_for ASC NULLS LAST) WHERE (processed_at IS NULL);
+CREATE INDEX idx_metadata ON my_queue_name USING GIN(metadata) WHERE processed_at IS NULL;
 ```
 These indexes are automatically part of the output query of the `GenerateCreateTableQuery` function.
-But if you create tables on your own, please make sure you have them. 
+But if you create tables on your own, please make sure you have them.
 
 ### Queue table partitioning
 
@@ -374,9 +414,11 @@ SELECT count(name) FROM pg_available_extensions where name = 'pg_partman';
 The template table must have exactly the same structure as the original queue, and it has the `_template` name suffix.
 It must also contain the indexes so the partition derived tables have it too.
 ```sql
-CREATE TABLE my_queue_name_template (id UUID NOT NULL DEFAULT gen_random_uuid(), created_at TIMESTAMP(0) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, payload JSONB DEFAULT NULL, metadata JSONB DEFAULT NULL, locked_until TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, processed_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, error_detail TEXT DEFAULT NULL, started_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, consumed_count INT DEFAULT 0 NOT NULL, PRIMARY KEY(id, created_at));
+CREATE TABLE my_queue_name_template (id UUID NOT NULL DEFAULT gen_random_uuid(), created_at TIMESTAMP(0) WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP NOT NULL, payload JSONB DEFAULT NULL, metadata JSONB DEFAULT NULL, locked_until TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, scheduled_for TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, processed_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, error_detail TEXT DEFAULT NULL, started_at TIMESTAMP(0) WITH TIME ZONE DEFAULT NULL, consumed_count INT DEFAULT 0 NOT NULL, PRIMARY KEY(id, created_at));
 CREATE INDEX IDX_CREATED_AT_TPL ON my_queue_name_template (created_at);
-CREATE INDEX IDX_PROCESSED_AT_TPL ON my_queue_name_template (consumed_count, processed_at) WHERE (processed_at IS NULL);
+CREATE INDEX IDX_PROCESSED_AT_NULL_TPL ON my_queue_name_template (processed_at) WHERE (processed_at IS NULL);
+CREATE INDEX IDX_SCHEDULED_FOR_TPL ON my_queue_name_template (scheduled_for ASC NULLS LAST) WHERE (processed_at IS NULL);
+CREATE INDEX IDX_METADATA_TPL ON my_queue_name_template USING GIN(metadata) WHERE processed_at IS NULL;
 ```
 
 2. we create the partitioned table with the same structure as the template table, but with the partitioning key:
