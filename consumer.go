@@ -408,8 +408,8 @@ func (c *Consumer) generateQuery() (*query.Builder, error) {
 		}
 
 		for i, filter := range c.cfg.MetadataFilters {
-			if len(filter.Operation) == 0 {
-				return nil, fatalError{Err: fmt.Errorf("metadata filter operation is empty")}
+			if filter.Operation != OpEqual && filter.Operation != OpNotEqual {
+				return nil, fatalError{Err: fmt.Errorf("unsupported metadata filter operation: %q", filter.Operation)}
 			}
 
 			qb.WriteString(fmt.Sprintf(" AND metadata->>@metadata_key_%d %s @metadata_value_%d", i, filter.Operation, i))
