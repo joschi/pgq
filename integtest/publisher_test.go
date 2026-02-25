@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/jackc/pgtype"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/joschi/pgq"
 	pgutils "github.com/joschi/pgq/internal/pg"
@@ -22,8 +22,8 @@ func TestPublisher(t *testing.T) {
 	ctx := context.Background()
 
 	type want struct {
-		metadata pgtype.JSONB
-		payload  pgtype.JSONB
+		metadata json.RawMessage
+		payload  json.RawMessage
 	}
 	tests := []struct {
 		name          string
@@ -46,8 +46,8 @@ func TestPublisher(t *testing.T) {
 				),
 			},
 			want: want{
-				metadata: pgtype.JSONB{Bytes: []byte(`{"host": "localhost", "test": "test_value"}`), Status: pgtype.Present},
-				payload:  pgtype.JSONB{Bytes: []byte(`{"foo": "bar"}`), Status: pgtype.Present},
+				metadata: json.RawMessage(`{"host": "localhost", "test": "test_value"}`),
+				payload:  json.RawMessage(`{"foo": "bar"}`),
 			},
 			wantErr: false,
 		},
@@ -83,16 +83,14 @@ func TestPublisher(t *testing.T) {
 			)
 			var (
 				id       pgtype.UUID
-				metadata pgtype.JSONB
-				payload  pgtype.JSONB
+				metadata json.RawMessage
+				payload  json.RawMessage
 			)
 			err = row.Scan(&id, &metadata, &payload)
 			require.NoError(t, err)
 			require.Equal(t, [16]byte(msgIDs[0]), id.Bytes)
-			require.Equal(t, tt.want.metadata.Status, metadata.Status)
-			require.Equal(t, string(tt.want.metadata.Bytes), string(metadata.Bytes))
-			require.Equal(t, tt.want.payload.Status, payload.Status)
-			require.Equal(t, string(tt.want.payload.Bytes), string(payload.Bytes))
+			require.Equal(t, string(tt.want.metadata), string(metadata))
+			require.Equal(t, string(tt.want.payload), string(payload))
 		})
 	}
 }
@@ -104,8 +102,8 @@ func TestPublisherTx(t *testing.T) {
 	ctx := context.Background()
 
 	type want struct {
-		metadata pgtype.JSONB
-		payload  pgtype.JSONB
+		metadata json.RawMessage
+		payload  json.RawMessage
 	}
 	tests := []struct {
 		name          string
@@ -128,8 +126,8 @@ func TestPublisherTx(t *testing.T) {
 				),
 			},
 			want: want{
-				metadata: pgtype.JSONB{Bytes: []byte(`{"host": "localhost", "test": "test_value"}`), Status: pgtype.Present},
-				payload:  pgtype.JSONB{Bytes: []byte(`{"foo": "bar"}`), Status: pgtype.Present},
+				metadata: json.RawMessage(`{"host": "localhost", "test": "test_value"}`),
+				payload:  json.RawMessage(`{"foo": "bar"}`),
 			},
 			wantErr: false,
 		},
@@ -166,8 +164,8 @@ func TestPublisherTx(t *testing.T) {
 
 			var (
 				id       pgtype.UUID
-				metadata pgtype.JSONB
-				payload  pgtype.JSONB
+				metadata json.RawMessage
+				payload  json.RawMessage
 			)
 			row := db.QueryRow(ctx,
 				fmt.Sprintf(
@@ -189,10 +187,8 @@ func TestPublisherTx(t *testing.T) {
 			err = row.Scan(&id, &metadata, &payload)
 			require.NoError(t, err)
 			require.Equal(t, [16]byte(msgIDs[0]), id.Bytes)
-			require.Equal(t, tt.want.metadata.Status, metadata.Status)
-			require.Equal(t, string(tt.want.metadata.Bytes), string(metadata.Bytes))
-			require.Equal(t, tt.want.payload.Status, payload.Status)
-			require.Equal(t, string(tt.want.payload.Bytes), string(payload.Bytes))
+			require.Equal(t, string(tt.want.metadata), string(metadata))
+			require.Equal(t, string(tt.want.payload), string(payload))
 
 			err = tx.Rollback(ctx)
 			require.NoError(t, err)

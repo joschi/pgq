@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgtype"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"go.opentelemetry.io/otel/metric/noop"
@@ -84,7 +84,7 @@ func TestConsumer_Run_graceful_shutdown(t *testing.T) {
 	)
 	err = row.Scan(&lockedUntil, &processedCount)
 	require.NoError(t, err)
-	require.Equal(t, pgtype.Null, lockedUntil.Status)
+	require.Equal(t, false, lockedUntil.Valid)
 	require.Equal(t, 1, processedCount)
 }
 
