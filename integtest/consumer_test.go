@@ -405,9 +405,11 @@ func TestConsumer_Run_Shutdown_completes_inflight(t *testing.T) {
 	require.Equal(t, 1, len(msgIDs))
 	msgID := msgIDs[0]
 
-	// Handler sleeps without watching ctx — it must complete naturally even
-	// after Shutdown is called.
+	// Handler signals it has started, then sleeps without watching ctx — it
+	// must complete naturally even after Shutdown is called.
+	handlerStarted := make(chan struct{})
 	handler := MessageHandlerFunc(func(_ context.Context, _ *MessageIncoming) (bool, error) {
+		close(handlerStarted)
 		time.Sleep(500 * time.Millisecond)
 		return MessageProcessed, nil
 	})
@@ -423,8 +425,12 @@ func TestConsumer_Run_Shutdown_completes_inflight(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- consumer.Run(ctx) }()
 
-	// Give the consumer time to pick up the message.
-	time.Sleep(150 * time.Millisecond)
+	// Wait for the handler to be in flight before calling Shutdown.
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start within 5s")
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -483,8 +489,10 @@ func TestConsumer_Run_Shutdown_bounded_by_ctx(t *testing.T) {
 	)
 	require.NoError(t, err)
 
+	handlerStarted := make(chan struct{})
 	unblock := make(chan struct{})
 	handler := MessageHandlerFunc(func(_ context.Context, _ *MessageIncoming) (bool, error) {
+		close(handlerStarted)
 		<-unblock
 		return MessageProcessed, nil
 	})
@@ -500,8 +508,12 @@ func TestConsumer_Run_Shutdown_bounded_by_ctx(t *testing.T) {
 	runDone := make(chan error, 1)
 	go func() { runDone <- consumer.Run(ctx) }()
 
-	// Give the consumer time to pick up the message and enter the handler.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the handler to be in flight before calling Shutdown.
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start within 5s")
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()

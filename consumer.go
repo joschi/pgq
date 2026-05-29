@@ -134,18 +134,25 @@ type InvalidMessage struct {
 	Payload  json.RawMessage
 }
 
+// ErrConsumerShutdown is returned by Run when it is invoked on a Consumer
+// whose Shutdown method has already been called. A Consumer is single-use:
+// once shut down, it cannot be reused.
+var ErrConsumerShutdown = errors.New("pgq: consumer is shut down")
+
 // Consumer is the preconfigured subscriber of the write input messages
 type Consumer struct {
-	db             *pgxpool.Pool
-	queueName      string
-	cfg            consumerConfig
-	handler        MessageHandler
-	metrics        *metrics
-	sem            *semaphore.Weighted
-	tracer         trace.Tracer
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
-	inflight       sync.WaitGroup
+	db                *pgxpool.Pool
+	queueName         string
+	cfg               consumerConfig
+	handler           MessageHandler
+	metrics           *metrics
+	sem               *semaphore.Weighted
+	tracer            trace.Tracer
+	shutdownCtx       context.Context
+	shutdownCancel    context.CancelFunc
+	shutdownDone      chan struct{}
+	shutdownWaitOnce  sync.Once
+	inflight          sync.WaitGroup
 }
 
 // ConsumerOption applies option to consumerConfig.
@@ -300,6 +307,7 @@ func NewConsumer(db *pgxpool.Pool, queueName string, handler MessageHandler, opt
 		tracer:         tracer,
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
+		shutdownDone:   make(chan struct{}),
 	}, nil
 }
 
@@ -331,10 +339,35 @@ func prepareProcessMetrics(queueName string, meter metric.Meter) (*metrics, erro
 	}, nil
 }
 
-// Run consumes messages until the context is cancelled or Shutdown is called.
-// Run must not be called concurrently on the same Consumer, and is single-use
-// once Shutdown has been called.
+// Run consumes messages until ctx is cancelled or Shutdown is called. Run
+// must not be called concurrently on the same Consumer, and a Consumer is
+// single-use: after Shutdown returns, a subsequent Run returns
+// [ErrConsumerShutdown] without consuming any messages.
+//
+// Run returns:
+//   - nil when Shutdown caused the loop to exit
+//   - ctx.Err() when ctx was cancelled before Shutdown
+//   - [io.EOF] when [WithStopOnEmptyQueue] is set and the queue drained
+//   - [ErrConsumerShutdown] when invoked after Shutdown
+//   - a wrapped error on fatal database failures
+//
+// Run blocks until in-flight handlers finish, regardless of which signal
+// stopped the loop.
 func (c *Consumer) Run(ctx context.Context) error {
+	// Sentinel Add must happen before any work that Shutdown.Wait could race
+	// against, including verifyTable's DB round-trips. Holding +1 throughout
+	// Run keeps the counter > 0 so a concurrent Shutdown.Wait blocks until
+	// Run's defer releases it.
+	c.inflight.Add(1)
+	defer func() {
+		c.inflight.Done()
+		c.inflight.Wait() // wait for handlers to finish
+	}()
+
+	if c.shutdownCtx.Err() != nil {
+		return ErrConsumerShutdown
+	}
+
 	c.cfg.Logger.InfoContext(ctx, "starting consumption...",
 		"inputQueue", c.queueName,
 	)
@@ -348,13 +381,7 @@ func (c *Consumer) Run(ctx context.Context) error {
 
 	pollCtx, cancelPoll := mergeCancel(ctx, c.shutdownCtx)
 	defer cancelPoll()
-	// Sentinel Add keeps the counter > 0 while Run is active so that a
-	// concurrent Shutdown.Wait cannot race the first batch's Add at counter 0.
-	c.inflight.Add(1)
-	defer func() {
-		c.inflight.Done()
-		c.inflight.Wait() // wait for handlers to finish
-	}()
+
 	for {
 		msgs, err := c.consumeMessages(pollCtx, query)
 		if err != nil {
@@ -380,6 +407,8 @@ func (c *Consumer) Run(ctx context.Context) error {
 			go func(msg *MessageIncoming) {
 				defer c.inflight.Done()
 				defer c.sem.Release(1)
+				// Handlers receive the caller's ctx, not pollCtx: Shutdown
+				// must not interrupt in-flight handlers — only stop polling.
 				c.handleMessage(ctx, msg)
 			}(msg)
 		}
@@ -391,17 +420,22 @@ func (c *Consumer) Run(ctx context.Context) error {
 // message's Deadline. The provided ctx bounds how long Shutdown waits for
 // in-flight work; if ctx expires first, Shutdown returns ctx.Err() and Run
 // still blocks on outstanding handlers via its own wait. Shutdown is safe to
-// call multiple times and concurrently. After Shutdown, Run is no longer
-// usable.
+// call multiple times and concurrently. After Shutdown, Run is single-use
+// and returns [ErrConsumerShutdown].
+//
+// Do not call Shutdown from inside a MessageHandler with an unbounded ctx:
+// the calling handler is itself counted as in-flight work, so the wait
+// would never complete. Use a deadline-bounded ctx in that case.
 func (c *Consumer) Shutdown(ctx context.Context) error {
 	c.shutdownCancel()
-	done := make(chan struct{})
-	go func() {
-		c.inflight.Wait()
-		close(done)
-	}()
+	c.shutdownWaitOnce.Do(func() {
+		go func() {
+			c.inflight.Wait()
+			close(c.shutdownDone)
+		}()
+	})
 	select {
-	case <-done:
+	case <-c.shutdownDone:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
