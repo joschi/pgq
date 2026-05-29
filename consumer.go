@@ -351,6 +351,12 @@ func prepareProcessMetrics(queueName string, meter metric.Meter) (*metrics, erro
 //   - [ErrConsumerShutdown] when invoked after Shutdown
 //   - a wrapped error on fatal database failures
 //
+// When both ctx and Shutdown are signalled, Run returns nil: Shutdown is
+// the higher-level intent (graceful drain), and a non-nil ctx.Err() here
+// would misrepresent a successful drain as a failure to callers using a
+// non-nil check to detect errors. Callers who need to observe the ctx
+// cancellation explicitly should check ctx.Err() themselves.
+//
 // Run blocks until in-flight handlers finish, regardless of which signal
 // stopped the loop.
 func (c *Consumer) Run(ctx context.Context) error {
