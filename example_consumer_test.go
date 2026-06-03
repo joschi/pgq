@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -65,6 +66,45 @@ func ExampleConsumer() {
 	}
 	ctx, _ := signal.NotifyContext(context.Background(), os.Interrupt)
 	if err := c.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Fatal("Error running consumer:", err)
+	}
+}
+
+// ExampleConsumer_Shutdown demonstrates a graceful drain on SIGINT/SIGTERM:
+// Run is started in a goroutine, and when a signal arrives Shutdown is
+// called with a bounded grace period. In-flight handlers run to their
+// per-message deadline; Run returns nil once they finish.
+func ExampleConsumer_Shutdown() {
+	config, err := pgxpool.ParseConfig("user=postgres password=postgres host=localhost port=5432 dbname=postgres")
+	if err != nil {
+		log.Fatal("Error parsing database config:", err)
+	}
+	db, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		log.Fatal("Error opening database:", err)
+	}
+	defer db.Close()
+	const queueName = "test_queue"
+	c, err := pgq.NewConsumer(db, queueName, &Handler{})
+	if err != nil {
+		log.Fatal("Error creating consumer:", err)
+	}
+
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runErr := make(chan error, 1)
+	go func() { runErr <- c.Run(context.Background()) }()
+
+	<-sigCtx.Done()
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := c.Shutdown(shutdownCtx); err != nil {
+		log.Println("Shutdown timed out; in-flight handlers may still be running:", err)
+	}
+
+	if err := <-runErr; err != nil {
 		log.Fatal("Error running consumer:", err)
 	}
 }

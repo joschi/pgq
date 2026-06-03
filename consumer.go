@@ -134,15 +134,25 @@ type InvalidMessage struct {
 	Payload  json.RawMessage
 }
 
+// ErrConsumerShutdown is returned by Run when it is invoked on a Consumer
+// whose Shutdown method has already been called. A Consumer is single-use:
+// once shut down, it cannot be reused.
+var ErrConsumerShutdown = errors.New("pgq: consumer is shut down")
+
 // Consumer is the preconfigured subscriber of the write input messages
 type Consumer struct {
-	db        *pgxpool.Pool
-	queueName string
-	cfg       consumerConfig
-	handler   MessageHandler
-	metrics   *metrics
-	sem       *semaphore.Weighted
-	tracer    trace.Tracer
+	db                *pgxpool.Pool
+	queueName         string
+	cfg               consumerConfig
+	handler           MessageHandler
+	metrics           *metrics
+	sem               *semaphore.Weighted
+	tracer            trace.Tracer
+	shutdownCtx       context.Context
+	shutdownCancel    context.CancelFunc
+	shutdownDone      chan struct{}
+	shutdownWaitOnce  sync.Once
+	inflight          sync.WaitGroup
 }
 
 // ConsumerOption applies option to consumerConfig.
@@ -285,15 +295,19 @@ func NewConsumer(db *pgxpool.Pool, queueName string, handler MessageHandler, opt
 	}
 	sem := semaphore.NewWeighted(int64(config.MaxParallelMessages))
 	tracer := config.TracerProvider.Tracer(otelScopeName)
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	return &Consumer{
-		db:        db,
-		queueName: queueName,
-		cfg:       config,
-		handler:   handler,
-		metrics:   processMetrics,
-		sem:       sem,
-		tracer:    tracer,
+		db:             db,
+		queueName:      queueName,
+		cfg:            config,
+		handler:        handler,
+		metrics:        processMetrics,
+		sem:            sem,
+		tracer:         tracer,
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
+		shutdownDone:   make(chan struct{}),
 	}, nil
 }
 
@@ -325,8 +339,41 @@ func prepareProcessMetrics(queueName string, meter metric.Meter) (*metrics, erro
 	}, nil
 }
 
-// Run consumes messages until the context isn't cancelled.
+// Run consumes messages until ctx is cancelled or Shutdown is called. Run
+// must not be called concurrently on the same Consumer, and a Consumer is
+// single-use: after Shutdown returns, a subsequent Run returns
+// [ErrConsumerShutdown] without consuming any messages.
+//
+// Run returns:
+//   - nil when Shutdown caused the loop to exit
+//   - ctx.Err() when ctx was cancelled before Shutdown
+//   - [io.EOF] when [WithStopOnEmptyQueue] is set and the queue drained
+//   - [ErrConsumerShutdown] when invoked after Shutdown
+//   - a wrapped error on fatal database failures
+//
+// When both ctx and Shutdown are signalled, Run returns nil: Shutdown is
+// the higher-level intent (graceful drain), and a non-nil ctx.Err() here
+// would misrepresent a successful drain as a failure to callers using a
+// non-nil check to detect errors. Callers who need to observe the ctx
+// cancellation explicitly should check ctx.Err() themselves.
+//
+// Run blocks until in-flight handlers finish, regardless of which signal
+// stopped the loop.
 func (c *Consumer) Run(ctx context.Context) error {
+	// Sentinel Add must happen before any work that Shutdown.Wait could race
+	// against, including verifyTable's DB round-trips. Holding +1 throughout
+	// Run keeps the counter > 0 so a concurrent Shutdown.Wait blocks until
+	// Run's defer releases it.
+	c.inflight.Add(1)
+	defer func() {
+		c.inflight.Done()
+		c.inflight.Wait() // wait for handlers to finish
+	}()
+
+	if c.shutdownCtx.Err() != nil {
+		return ErrConsumerShutdown
+	}
+
 	c.cfg.Logger.InfoContext(ctx, "starting consumption...",
 		"inputQueue", c.queueName,
 	)
@@ -338,14 +385,18 @@ func (c *Consumer) Run(ctx context.Context) error {
 		return fmt.Errorf("generating query: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	defer wg.Wait() // wait for handlers to finish
+	pollCtx, cancelPoll := mergeCancel(ctx, c.shutdownCtx)
+	defer cancelPoll()
+
 	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		msgs, err := c.consumeMessages(ctx, query)
+		msgs, err := c.consumeMessages(pollCtx, query)
 		if err != nil {
+			if c.shutdownCtx.Err() != nil {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if errors.Is(err, io.EOF) {
 				return io.EOF
 			}
@@ -357,14 +408,55 @@ func (c *Consumer) Run(ctx context.Context) error {
 			)
 			continue
 		}
-		wg.Add(len(msgs))
+		c.inflight.Add(len(msgs))
 		for _, msg := range msgs {
 			go func(msg *MessageIncoming) {
-				defer wg.Done()
+				defer c.inflight.Done()
 				defer c.sem.Release(1)
+				// Handlers receive the caller's ctx, not pollCtx: Shutdown
+				// must not interrupt in-flight handlers — only stop polling.
 				c.handleMessage(ctx, msg)
 			}(msg)
 		}
+	}
+}
+
+// Shutdown stops polling for new messages and waits for in-flight handlers to
+// finish. Handler contexts are not cancelled — handlers run until each
+// message's Deadline. The provided ctx bounds how long Shutdown waits for
+// in-flight work; if ctx expires first, Shutdown returns ctx.Err() and Run
+// still blocks on outstanding handlers via its own wait. Shutdown is safe to
+// call multiple times and concurrently. After Shutdown, Run is single-use
+// and returns [ErrConsumerShutdown].
+//
+// Do not call Shutdown from inside a MessageHandler with an unbounded ctx:
+// the calling handler is itself counted as in-flight work, so the wait
+// would never complete. Use a deadline-bounded ctx in that case.
+func (c *Consumer) Shutdown(ctx context.Context) error {
+	c.shutdownCancel()
+	c.shutdownWaitOnce.Do(func() {
+		go func() {
+			c.inflight.Wait()
+			close(c.shutdownDone)
+		}()
+	})
+	select {
+	case <-c.shutdownDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// mergeCancel returns a context derived from parent that is also cancelled
+// when signal is cancelled. The returned cancel func releases the AfterFunc
+// registration and cancels the merged context.
+func mergeCancel(parent, signal context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	stop := context.AfterFunc(signal, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
 	}
 }
 

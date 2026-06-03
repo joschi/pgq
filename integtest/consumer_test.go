@@ -21,7 +21,7 @@ import (
 	"github.com/joschi/pgq/x/schema"
 )
 
-func TestConsumer_Run_graceful_shutdown(t *testing.T) {
+func TestConsumer_Run_hard_stop_via_ctx_cancel(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -377,6 +377,157 @@ func TestConsumer_Continue_After_Error(t *testing.T) {
 	err = row.Scan(&msgCount)
 	require.NoError(t, err)
 	require.Equal(t, 4, msgCount)
+}
+
+func TestConsumer_Run_Shutdown_completes_inflight(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+
+	db := openDB(t)
+	queueName := t.Name()
+	_, _ = db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+	_, err := db.Exec(ctx, schema.GenerateCreateTableQuery(queueName))
+	t.Cleanup(func() {
+		db := openDB(t)
+		_, err := db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+		require.NoError(t, err)
+		db.Close()
+	})
+	require.NoError(t, err)
+	publisher := NewPublisher(db)
+
+	msgIDs, err := publisher.Publish(ctx, queueName,
+		&MessageOutgoing{Payload: json.RawMessage(`{"foo":"bar"}`)},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(msgIDs))
+	msgID := msgIDs[0]
+
+	// Handler signals it has started, then sleeps without watching ctx — it
+	// must complete naturally even after Shutdown is called.
+	handlerStarted := make(chan struct{})
+	handler := MessageHandlerFunc(func(_ context.Context, _ *MessageIncoming) (bool, error) {
+		close(handlerStarted)
+		time.Sleep(500 * time.Millisecond)
+		return MessageProcessed, nil
+	})
+	consumer, err := NewConsumer(db, queueName, handler,
+		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+		WithLockDuration(time.Hour),
+		WithPollingInterval(50*time.Millisecond),
+		WithMaxParallelMessages(1),
+		WithMeterProvider(noop.NewMeterProvider()),
+	)
+	require.NoError(t, err)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- consumer.Run(ctx) }()
+
+	// Wait for the handler to be in flight before calling Shutdown.
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start within 5s")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	require.NoError(t, consumer.Shutdown(shutdownCtx))
+
+	select {
+	case err := <-runDone:
+		require.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after Shutdown")
+	}
+
+	db.Close()
+
+	// evaluate: handler must have completed and acked the message.
+	query := fmt.Sprintf(
+		`SELECT processed_at, locked_until FROM %s WHERE id = $1`,
+		pg.QuoteIdentifier(queueName),
+	)
+	db = openDB(t)
+	t.Cleanup(func() {
+		db.Close()
+	})
+	row := db.QueryRow(ctx, query, msgID)
+	var (
+		processedAt pgtype.Timestamptz
+		lockedUntil pgtype.Timestamptz
+	)
+	err = row.Scan(&processedAt, &lockedUntil)
+	require.NoError(t, err)
+	require.Equal(t, true, processedAt.Valid)
+	require.Equal(t, false, lockedUntil.Valid)
+}
+
+func TestConsumer_Run_Shutdown_bounded_by_ctx(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	ctx := context.Background()
+
+	db := openDB(t)
+	queueName := t.Name()
+	_, _ = db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+	_, err := db.Exec(ctx, schema.GenerateCreateTableQuery(queueName))
+	t.Cleanup(func() {
+		db := openDB(t)
+		_, err := db.Exec(ctx, schema.GenerateDropTableQuery(queueName))
+		require.NoError(t, err)
+		db.Close()
+	})
+	require.NoError(t, err)
+	publisher := NewPublisher(db)
+
+	_, err = publisher.Publish(ctx, queueName,
+		&MessageOutgoing{Payload: json.RawMessage(`{"foo":"bar"}`)},
+	)
+	require.NoError(t, err)
+
+	handlerStarted := make(chan struct{})
+	unblock := make(chan struct{})
+	handler := MessageHandlerFunc(func(_ context.Context, _ *MessageIncoming) (bool, error) {
+		close(handlerStarted)
+		<-unblock
+		return MessageProcessed, nil
+	})
+	consumer, err := NewConsumer(db, queueName, handler,
+		WithLogger(slog.New(slog.NewTextHandler(&tbWriter{tb: t}, &slog.HandlerOptions{Level: slog.LevelDebug}))),
+		WithLockDuration(time.Hour),
+		WithPollingInterval(50*time.Millisecond),
+		WithMaxParallelMessages(1),
+		WithMeterProvider(noop.NewMeterProvider()),
+	)
+	require.NoError(t, err)
+
+	runDone := make(chan error, 1)
+	go func() { runDone <- consumer.Run(ctx) }()
+
+	// Wait for the handler to be in flight before calling Shutdown.
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not start within 5s")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancel()
+	err = consumer.Shutdown(shutdownCtx)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+
+	// Unblock the handler; Run should then return cleanly.
+	close(unblock)
+	select {
+	case err := <-runDone:
+		require.NoError(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after handler unblocked")
+	}
 }
 
 func openDB(t *testing.T) *pgxpool.Pool {
