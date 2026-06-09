@@ -243,6 +243,55 @@ func (h *handler) HandleMessage(_ context.Context, msg *pgq.MessageIncoming) (pr
 }
 ```
 
+### Graceful shutdown
+
+`Consumer` supports two stop signals with different semantics:
+
+| Signal | How | Effect |
+|:---|:---|:---|
+| Hard stop | Cancel the `ctx` passed to `Run` | Stops polling **and** cancels all in-flight handler contexts immediately |
+| Graceful drain | Call `Consumer.Shutdown(shutdownCtx)` | Stops polling; in-flight handlers run to their per-message deadline and ack normally |
+
+`Run` return values:
+
+| Trigger | Returns |
+|:---|:---|
+| `Shutdown` called (graceful drain), even if `ctx` was also cancelled | `nil` |
+| `ctx` cancelled (hard stop, no `Shutdown`) | `ctx.Err()` |
+| [`WithStopOnEmptyQueue`](#consumer-options) and queue empty | `io.EOF` |
+| Called after `Shutdown` was invoked | `ErrConsumerShutdown` |
+
+```go
+c, err := pgq.NewConsumer(db, queueName, handler)
+if err != nil {
+    log.Fatal(err)
+}
+
+sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+defer stop()
+
+runErr := make(chan error, 1)
+go func() { runErr <- c.Run(context.Background()) }()
+
+// Wait for SIGINT, then drain gracefully with a 30-second deadline.
+<-sigCtx.Done()
+
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+if err := c.Shutdown(shutdownCtx); err != nil {
+    log.Println("Shutdown timed out; in-flight handlers may still be running:", err)
+}
+
+if err := <-runErr; err != nil {
+    log.Fatal("Error running consumer:", err)
+}
+```
+
+`Shutdown` is safe to call multiple times and concurrently. If `Shutdown`'s own context expires before all handlers finish, `Shutdown` returns `ctx.Err()`, but `Run` continues to wait for handlers on its own — no work is lost.
+
+> [!WARNING]
+> Do not call `Shutdown` from inside a `MessageHandler` with an unbounded context. The calling handler is counted as in-flight work, so `Shutdown` would block forever. Use a deadline-bounded context in that case.
+
 ### Consumer options
 
 You can configure the consumer by passing the optional `ConsumeOptions` when creating it.
