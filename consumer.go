@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -94,6 +95,8 @@ type consumerConfig struct {
 	// MaxConsumeCount is the maximal number of times a message can be consumed before it is ignored.
 	// This is a safety mechanism to prevent failure infinite loops when a message causes unhandled panic, OOM etc.
 	MaxConsumeCount uint
+	// RetryBackoff delays redelivery of NACKed messages. Zero value means immediate redelivery.
+	RetryBackoff ExponentialBackoff
 
 	// MsgProcessingReserveDuration is the duration for which the message is reserved for handling result state.
 	MessageProcessingReserveDuration time.Duration
@@ -228,6 +231,18 @@ func WithHistoryLimit(d time.Duration) ConsumerOption {
 func WithMaxConsumeCount(max uint) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.MaxConsumeCount = max
+	}
+}
+
+// WithRetryBackoff delays redelivery of NACKed messages. On NACK the message's
+// locked_until is set to now + delay (database clock), so no consumer can claim
+// it before then. The delay is stored in the queue table, so it survives
+// consumer restarts and applies to all consumers. No delay is applied after
+// the last attempt allowed by [WithMaxConsumeCount]. By default, NACKed
+// messages are redelivered immediately.
+func WithRetryBackoff(b ExponentialBackoff) ConsumerOption {
+	return func(c *consumerConfig) {
+		c.RetryBackoff = b
 	}
 }
 
@@ -764,7 +779,7 @@ func (c *Consumer) finishParsing(pgMsg pgMessage) (*MessageIncoming, error) {
 		id:                  uuid.UUID(pgMsg.ID.Bytes),
 		once:                sync.Once{},
 		ackFn:               c.ackMessage(c.db, pgMsg.ID),
-		nackFn:              c.nackMessage(c.db, pgMsg.ID),
+		nackFn:              c.nackMessage(c.db, pgMsg.ID, int(pgMsg.Attempt.Int32)),
 		discardFn:           c.discardMessage(c.db, pgMsg.ID),
 		updateLockedUntilFn: c.updateLockedUntil(c.db, pgMsg.ID),
 	}
@@ -842,10 +857,17 @@ func (c *Consumer) ackMessage(exec execer, msgID pgtype.UUID) func(ctx context.C
 	}
 }
 
-func (c *Consumer) nackMessage(exec execer, msgID pgtype.UUID) func(ctx context.Context, reason string) error {
-	query := `UPDATE ` + pg.QuoteIdentifier(c.queueName) + ` SET locked_until = NULL, error_detail = $2 WHERE id = $1`
+func (c *Consumer) nackMessage(exec execer, msgID pgtype.UUID, attempt int) func(ctx context.Context, reason string) error {
+	// A NULL retry delay yields locked_until = NULL: eligible immediately.
+	query := `UPDATE ` + pg.QuoteIdentifier(c.queueName) + ` SET locked_until = CURRENT_TIMESTAMP + $3::interval, error_detail = $2 WHERE id = $1`
 	return func(ctx context.Context, reason string) error {
-		if _, err := exec.Exec(ctx, query, msgID, reason); err != nil {
+		var retryDelay pgtype.Interval
+		if c.cfg.MaxConsumeCount == 0 || attempt < int(c.cfg.MaxConsumeCount) {
+			if d := c.cfg.RetryBackoff.delay(attempt, rand.Float64()); d > 0 {
+				retryDelay = pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
+			}
+		}
+		if _, err := exec.Exec(ctx, query, msgID, reason, retryDelay); err != nil {
 			c.metrics.failedProcessingCounter.Add(ctx, 1,
 				metric.WithAttributes(
 					attrResolution.String("nack"),
