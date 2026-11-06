@@ -10,25 +10,10 @@ import (
 	"github.com/joschi/pgq/internal/pg"
 )
 
-type queueMetricsConfig struct {
-	maxConsumeCount uint
-}
-
-// QueueMetricsOption configures [RegisterQueueMetrics].
-type QueueMetricsOption func(*queueMetricsConfig)
-
-// WithQueueMetricsMaxConsumeCount sets the consume count at which an
-// unprocessed message counts as exhausted. Set it to the value passed to the
-// consumers' [WithMaxConsumeCount]. Default is 3, the consumer default. 0
-// means unlimited: no message is ever exhausted.
-func WithQueueMetricsMaxConsumeCount(n uint) QueueMetricsOption {
-	return func(c *queueMetricsConfig) {
-		c.maxConsumeCount = n
-	}
-}
-
 // RegisterQueueMetrics registers OpenTelemetry gauges that describe the
-// whole queue table. Each gauge carries the queue_name attribute.
+// whole queue table, using the consumer's meter provider ([WithMeterProvider])
+// and max consume count ([WithMaxConsumeCount]). Each gauge carries the
+// queue_name attribute.
 //
 //   - pgq.queue.pending_messages counts due, unprocessed messages that
 //     consumers can still pick up. It includes messages a consumer is
@@ -48,16 +33,15 @@ func WithQueueMetricsMaxConsumeCount(n uint) QueueMetricsOption {
 // the callback reports no values and returns the error, which the
 // OpenTelemetry SDK passes to its error handler.
 //
-// The metrics don't depend on any Consumer. Register them once per queue, not
-// in every consumer replica, and call Unregister on the returned registration
-// to stop collecting. Consumer metadata filters and history limits don't
-// apply.
-func RegisterQueueMetrics(db *pgxpool.Pool, queueName string, mp metric.MeterProvider, opts ...QueueMetricsOption) (metric.Registration, error) {
-	cfg := queueMetricsConfig{maxConsumeCount: defaultConsumerConfig.MaxConsumeCount}
-	for _, opt := range opts {
-		opt(&cfg)
-	}
+// Neither NewConsumer nor Run registers the metrics. Call RegisterQueueMetrics
+// on one consumer per queue, not on every replica, and call Unregister on the
+// returned registration to stop collecting. The consumer does not need to be
+// running. Metadata filters and history limits don't apply.
+func (c *Consumer) RegisterQueueMetrics() (metric.Registration, error) {
+	return registerQueueMetrics(c.db, c.queueName, c.cfg.MetricProvider, c.cfg.MaxConsumeCount)
+}
 
+func registerQueueMetrics(db *pgxpool.Pool, queueName string, mp metric.MeterProvider, maxConsumeCount uint) (metric.Registration, error) {
 	meter := mp.Meter(otelScopeName)
 	pending, err := meter.Int64ObservableGauge("pgq.queue.pending_messages",
 		metric.WithUnit("{message}"),
@@ -96,7 +80,7 @@ func RegisterQueueMetrics(db *pgxpool.Pool, queueName string, mp metric.MeterPro
 	return meter.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		var p, e int64
 		var age float64
-		if err := db.QueryRow(ctx, query, cfg.maxConsumeCount).Scan(&p, &age, &e); err != nil {
+		if err := db.QueryRow(ctx, query, maxConsumeCount).Scan(&p, &age, &e); err != nil {
 			return fmt.Errorf("pgq: querying state of queue %s: %w", queueName, err)
 		}
 		o.ObserveInt64(pending, p, attrs)

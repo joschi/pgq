@@ -347,13 +347,18 @@ err := pgq.ValidateIndexes(ctx, db, "my_queue")
 
 ### Queue metrics
 
-`RegisterQueueMetrics` reports the state of a queue table as OpenTelemetry gauges. It runs one SQL query each time the
-meter provider collects, so the metric reader's interval sets how often pgq queries the database.
+`Consumer.RegisterQueueMetrics` reports the state of the consumer's queue table as OpenTelemetry gauges. It runs one SQL
+query each time the meter provider collects, so the metric reader's interval sets how often pgq queries the database.
 
 ```go
-reg, err := pgq.RegisterQueueMetrics(db, "my_queue", otel.GetMeterProvider(),
-	pgq.WithQueueMetricsMaxConsumeCount(3), // must equal the consumers' WithMaxConsumeCount
+consumer, err := pgq.NewConsumer(db, "my_queue", handler,
+	pgq.WithMaxConsumeCount(5),
+	pgq.WithMeterProvider(otel.GetMeterProvider()),
 )
+if err != nil {
+	return err
+}
+reg, err := consumer.RegisterQueueMetrics()
 if err != nil {
 	return err
 }
@@ -369,15 +374,15 @@ defer reg.Unregister()
 All three carry the `queue_name` attribute. A message is due when `scheduled_for` is `NULL` or in the past, so a message
 scheduled for later doesn't count until then. ACKed and discarded messages have `processed_at` set and never count.
 
-- `WithQueueMetricsMaxConsumeCount` must match the consumers' `WithMaxConsumeCount`. pgq can't check this. With a
-  lower value, messages that consumers still retry count as exhausted. With a higher one, exhausted messages count as
-  pending and pin `oldest_pending_age`.
+- The gauges use the consumer's `WithMaxConsumeCount` and `WithMeterProvider`, so the exhausted classification always
+  matches what that consumer does.
 - The query uses the database clock, so `oldest_pending_age` keeps growing when every consumer is stopped.
 - The age counts from `created_at`. A message scheduled for tomorrow reports an age of one day the moment it becomes due.
 - The metrics describe the whole table. They ignore consumer metadata filters and `WithHistoryLimit`, so on a table
   shared by several consumer groups they add those groups up.
-- Register the metrics in one process per queue, not in every consumer replica. Each registration runs its own query
-  on every collection.
+- Creating or running a consumer doesn't register the metrics. Call `RegisterQueueMetrics` on one consumer per queue,
+  not on every replica, because each registration runs its own query on every collection. The consumer doesn't have to
+  be running.
 - If the query fails, pgq reports no values for that collection and passes the error to the OpenTelemetry error
   handler. A missing data point means the state is unknown, not that the queue is empty.
 - The query filters on `processed_at IS NULL`, the condition of the partial index that `GenerateCreateTableQuery`

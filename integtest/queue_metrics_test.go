@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -26,7 +27,7 @@ func TestQueueMetrics_message_states(t *testing.T) {
 	db := openDB(t)
 	queue := createMetricsQueue(t, db)
 	reader := sdkmetric.NewManualReader()
-	_, err := RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	_, err := registerQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 	require.NoError(t, err)
 
 	// Empty queue.
@@ -62,8 +63,8 @@ func TestQueueMetrics_message_states(t *testing.T) {
 		{max: 5, pending: 5, exhausted: 0, oldestAge: 4 * 3600},
 	} {
 		r := sdkmetric.NewManualReader()
-		_, err := RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)),
-			WithQueueMetricsMaxConsumeCount(tc.max))
+		_, err := registerQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(r)),
+			WithMaxConsumeCount(tc.max))
 		require.NoError(t, err)
 		got := collectQueueState(t, r, queue)
 		require.Equal(t, tc.pending, got.pending)
@@ -79,7 +80,7 @@ func TestQueueMetrics_consumers_and_queues(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	for _, q := range []string{queue, otherQueue} {
-		_, err := RegisterQueueMetrics(db, q, mp, WithQueueMetricsMaxConsumeCount(1))
+		_, err := registerQueueMetrics(db, q, mp, WithMaxConsumeCount(1))
 		require.NoError(t, err)
 	}
 
@@ -135,7 +136,7 @@ func TestQueueMetrics_query_error_and_unregister(t *testing.T) {
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 
-	missing, err := RegisterQueueMetrics(db, "pgq_missing_queue_table", mp)
+	missing, err := registerQueueMetrics(db, "pgq_missing_queue_table", mp)
 	require.NoError(t, err)
 	var rm metricdata.ResourceMetrics
 	err = reader.Collect(context.Background(), &rm)
@@ -145,7 +146,7 @@ func TestQueueMetrics_query_error_and_unregister(t *testing.T) {
 	require.Equal(t, 0, countDataPoints(rm))
 
 	queue := createMetricsQueue(t, db)
-	reg, err := RegisterQueueMetrics(db, queue, mp)
+	reg, err := registerQueueMetrics(db, queue, mp)
 	require.NoError(t, err)
 	require.NoError(t, missing.Unregister())
 	require.Equal(t, queueState{}, collectQueueState(t, reader, queue))
@@ -169,7 +170,7 @@ func TestQueueMetrics_large_history(t *testing.T) {
 	require.NoError(t, err)
 
 	reader := sdkmetric.NewManualReader()
-	_, err = RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	_, err = registerQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 	require.NoError(t, err)
 
 	start := time.Now()
@@ -260,8 +261,8 @@ func TestQueueMetrics_final_attempt(t *testing.T) {
 	queue := createMetricsQueue(t, db)
 	ctx := context.Background()
 	reader := sdkmetric.NewManualReader()
-	_, err := RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
-		WithQueueMetricsMaxConsumeCount(1))
+	_, err := registerQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
+		WithMaxConsumeCount(1))
 	require.NoError(t, err)
 
 	// Each message is on its final attempt (max 1). The handler blocks until
@@ -311,4 +312,14 @@ func TestQueueMetrics_final_attempt(t *testing.T) {
 		pg.QuoteIdentifier(queue)))
 	require.NoError(t, err)
 	require.Equal(t, queueState{exhausted: 2}, collectQueueState(t, reader, queue))
+}
+
+// registerQueueMetrics registers queue metrics through a consumer that is
+// never run, configured with opts.
+func registerQueueMetrics(db *pgxpool.Pool, queue string, mp metric.MeterProvider, opts ...ConsumerOption) (metric.Registration, error) {
+	c, err := NewConsumer(db, queue, nil, append(opts, WithMeterProvider(mp))...)
+	if err != nil {
+		return nil, err
+	}
+	return c.RegisterQueueMetrics()
 }
