@@ -78,8 +78,8 @@ func RegisterQueueMetrics(db *pgxpool.Pool, queueName string, mp metric.MeterPro
 		return nil, err
 	}
 
-	// processed_at IS NULL lets PostgreSQL use the partial
-	// processed_at_null index, so processed history is never scanned.
+	// processed_at IS NULL matches the partial processed_at_null index, so
+	// PostgreSQL can skip processed rows. The plan is up to the planner.
 	query := `SELECT
 		count(*) FILTER (WHERE NOT exhausted),
 		COALESCE(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - min(created_at) FILTER (WHERE NOT exhausted)), 0)::float8,

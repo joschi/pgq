@@ -254,3 +254,61 @@ func createMetricsQueue(t *testing.T, db *pgxpool.Pool, suffix ...string) string
 	})
 	return queue
 }
+
+func TestQueueMetrics_final_attempt(t *testing.T) {
+	db := openDB(t)
+	queue := createMetricsQueue(t, db)
+	ctx := context.Background()
+	reader := sdkmetric.NewManualReader()
+	_, err := RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)),
+		WithQueueMetricsMaxConsumeCount(1))
+	require.NoError(t, err)
+
+	// Each message is on its final attempt (max 1). The handler blocks until
+	// it receives the outcome to return.
+	started := make(chan struct{})
+	outcome := make(chan bool)
+	t.Cleanup(func() { close(outcome) })
+	handler := MessageHandlerFunc(func(context.Context, *MessageIncoming) (bool, error) {
+		started <- struct{}{}
+		return <-outcome, nil
+	})
+	attempt := func(processed bool) {
+		_, err := db.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (created_at, payload, metadata) VALUES (now() - interval '30 seconds', '{}', '{}')`,
+			pg.QuoteIdentifier(queue)))
+		require.NoError(t, err)
+		c, err := NewConsumer(db, queue, handler, WithMaxConsumeCount(1), WithStopOnEmptyQueue(true), WithPollingInterval(10*time.Millisecond))
+		require.NoError(t, err)
+		done := make(chan error, 1)
+		go func() { done <- c.Run(ctx) }()
+		<-started
+
+		got := collectQueueState(t, reader, queue)
+		require.Equal(t, int64(1), got.pending)
+		require.Equal(t, int64(0), got.exhausted)
+		requireSeconds(t, 30, got.oldestAge)
+
+		outcome <- processed
+		require.ErrorIs(t, <-done, io.EOF)
+	}
+
+	attempt(MessageProcessed) // final attempt ACKed
+	require.Equal(t, queueState{}, collectQueueState(t, reader, queue))
+
+	attempt(MessageNotProcessed) // final attempt NACKed
+	require.Equal(t, queueState{exhausted: 1}, collectQueueState(t, reader, queue))
+
+	// A consumer crashed during the final attempt: pending until its lock expires.
+	_, err = db.Exec(ctx, fmt.Sprintf(`INSERT INTO %s (created_at, consumed_count, locked_until, payload, metadata)
+		VALUES (now() - interval '10 seconds', 1, now() + interval '1 hour', '{}', '{}')`, pg.QuoteIdentifier(queue)))
+	require.NoError(t, err)
+	got := collectQueueState(t, reader, queue)
+	require.Equal(t, int64(1), got.pending)
+	require.Equal(t, int64(1), got.exhausted)
+	requireSeconds(t, 10, got.oldestAge)
+
+	_, err = db.Exec(ctx, fmt.Sprintf(`UPDATE %s SET locked_until = now() - interval '1 second' WHERE locked_until IS NOT NULL`,
+		pg.QuoteIdentifier(queue)))
+	require.NoError(t, err)
+	require.Equal(t, queueState{exhausted: 2}, collectQueueState(t, reader, queue))
+}

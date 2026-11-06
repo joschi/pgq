@@ -372,7 +372,7 @@ scheduled for later doesn't count until then. ACKed and discarded messages have 
 - `WithQueueMetricsMaxConsumeCount` must match the consumers' `WithMaxConsumeCount`. pgq can't check this. With a
   lower value, messages that consumers still retry count as exhausted. With a higher one, exhausted messages count as
   pending and pin `oldest_pending_age`.
-- The query uses the database clock, so `oldest_pending_age` keeps growing when every consumer is stopped. Alert on it.
+- The query uses the database clock, so `oldest_pending_age` keeps growing when every consumer is stopped.
 - The age counts from `created_at`. A message scheduled for tomorrow reports an age of one day the moment it becomes due.
 - The metrics describe the whole table. They ignore consumer metadata filters and `WithHistoryLimit`, so on a table
   shared by several consumer groups they add those groups up.
@@ -381,8 +381,9 @@ scheduled for later doesn't count until then. ACKed and discarded messages have 
 - If the query fails, pgq reports no values for that collection and passes the error to the OpenTelemetry error
   handler. A missing data point means the state is unknown, not that the queue is empty.
 - The query filters on `processed_at IS NULL`, the condition of the partial index that `GenerateCreateTableQuery`
-  creates, so PostgreSQL never reads processed history. Exhausted messages stay in that index until you process or
-  delete them, and a large pile of them slows the query down.
+  creates, so PostgreSQL can use that index and skip processed rows. Collection cost depends on the plan PostgreSQL
+  picks and on the number of unprocessed rows, exhausted ones included. A large number of unprocessed rows makes
+  every collection slower.
 
 ## Message
 
