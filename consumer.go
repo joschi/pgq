@@ -239,7 +239,8 @@ func WithMaxConsumeCount(max uint) ConsumerOption {
 // it before then. The delay is stored in the queue table, so it survives
 // consumer restarts and applies to all consumers. No delay is applied after
 // the last attempt allowed by [WithMaxConsumeCount]. By default, NACKed
-// messages are redelivered immediately.
+// messages are redelivered immediately. [NewConsumer] returns an error if b
+// is invalid.
 func WithRetryBackoff(b ExponentialBackoff) ConsumerOption {
 	return func(c *consumerConfig) {
 		c.RetryBackoff = b
@@ -301,6 +302,9 @@ func NewConsumer(db *pgxpool.Pool, queueName string, handler MessageHandler, opt
 	config := defaultConsumerConfig
 	for _, opt := range opts {
 		opt(&config)
+	}
+	if err := config.RetryBackoff.validate(); err != nil {
+		return nil, fmt.Errorf("invalid retry backoff: %w", err)
 	}
 
 	meter := config.MetricProvider.Meter(otelScopeName)
@@ -862,7 +866,7 @@ func (c *Consumer) nackMessage(exec execer, msgID pgtype.UUID, attempt int) func
 	query := `UPDATE ` + pg.QuoteIdentifier(c.queueName) + ` SET locked_until = CURRENT_TIMESTAMP + $3::interval, error_detail = $2 WHERE id = $1`
 	return func(ctx context.Context, reason string) error {
 		var retryDelay pgtype.Interval
-		if c.cfg.MaxConsumeCount == 0 || attempt < int(c.cfg.MaxConsumeCount) {
+		if !isLastAttempt(attempt, c.cfg.MaxConsumeCount) {
 			if d := c.cfg.RetryBackoff.delay(attempt, rand.Float64()); d > 0 {
 				retryDelay = pgtype.Interval{Microseconds: d.Microseconds(), Valid: true}
 			}

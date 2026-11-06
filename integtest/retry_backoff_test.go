@@ -26,7 +26,11 @@ func TestRetryBackoff_disabled_redelivers_immediately(t *testing.T) {
 	db, queue := setupQueue(t)
 	id := publishOne(t, db, queue, nil)
 
-	runNacking(t, db, queue, WithMaxConsumeCount(3), WithStopOnEmptyQueue(false))
+	// Each run stops once nothing is claimable; with no backoff the message
+	// is claimable again right after its NACK.
+	for range 4 {
+		runNacking(t, db, queue, WithMaxConsumeCount(3))
+	}
 
 	s := readState(t, db, queue, id)
 	require.Equal(t, 3, s.consumedCount)
@@ -174,7 +178,7 @@ func publishOne(t *testing.T, db *pgxpool.Pool, queue string, scheduledFor *time
 }
 
 // runNacking runs a consumer that NACKs everything until no message is
-// claimable. Pass WithStopOnEmptyQueue(false) to run for 2s instead.
+// claimable.
 func runNacking(t *testing.T, db *pgxpool.Pool, queue string, opts ...ConsumerOption) {
 	handler := MessageHandlerFunc(func(context.Context, *MessageIncoming) (bool, error) {
 		return MessageNotProcessed, fmt.Errorf("nacked")
