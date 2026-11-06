@@ -345,6 +345,51 @@ err := pgq.ValidateFields(ctx, db, "my_queue")
 err := pgq.ValidateIndexes(ctx, db, "my_queue")
 ```
 
+### Queue metrics
+
+`Consumer.RegisterQueueMetrics` reports the state of the consumer's queue table as OpenTelemetry gauges. It runs one SQL
+query each time the meter provider collects, so the metric reader's interval sets how often pgq queries the database.
+
+```go
+consumer, err := pgq.NewConsumer(db, "my_queue", handler,
+	pgq.WithMaxConsumeCount(5),
+	pgq.WithMeterProvider(otel.GetMeterProvider()),
+)
+if err != nil {
+	return err
+}
+reg, err := consumer.RegisterQueueMetrics()
+if err != nil {
+	return err
+}
+defer reg.Unregister()
+```
+
+| Metric                         | Unit        | Value                                                                                                                                                  |
+|:-------------------------------|:------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `pgq.queue.pending_messages`   | `{message}` | Due messages with `processed_at IS NULL` that still have attempts left. Includes messages a consumer is processing and messages waiting for a retry. |
+| `pgq.queue.oldest_pending_age` | `s`         | `now() - created_at` of the oldest pending message, or 0 when nothing is pending.                                                                     |
+| `pgq.queue.exhausted_messages` | `{message}` | Due messages with `processed_at IS NULL` whose `consumed_count` reached the max consume count and that no consumer holds a lock on. Consumers skip them and pgq never deletes them. A message on its last attempt counts as pending until that attempt ends. |
+
+All three carry the `queue_name` attribute. A message is due when `scheduled_for` is `NULL` or in the past, so a message
+scheduled for later doesn't count until then. ACKed and discarded messages have `processed_at` set and never count.
+
+- The gauges use the consumer's `WithMaxConsumeCount` and `WithMeterProvider`, so the exhausted classification always
+  matches what that consumer does.
+- The query uses the database clock, so `oldest_pending_age` keeps growing when every consumer is stopped.
+- The age counts from `created_at`. A message scheduled for tomorrow reports an age of one day the moment it becomes due.
+- The metrics describe the whole table. They ignore consumer metadata filters and `WithHistoryLimit`, so on a table
+  shared by several consumer groups they add those groups up.
+- Creating or running a consumer doesn't register the metrics. Call `RegisterQueueMetrics` on one consumer per queue,
+  not on every replica, because each registration runs its own query on every collection. The consumer doesn't have to
+  be running.
+- If the query fails, pgq reports no values for that collection and passes the error to the OpenTelemetry error
+  handler. A missing data point means the state is unknown, not that the queue is empty.
+- The query filters on `processed_at IS NULL`, the condition of the partial index that `GenerateCreateTableQuery`
+  creates, so PostgreSQL can use that index and skip processed rows. Collection cost depends on the plan PostgreSQL
+  picks and on the number of unprocessed rows, exhausted ones included. A large number of unprocessed rows makes
+  every collection slower.
+
 ## Message
 
 The message is the essential structure for communication between services using `pgq`. 
