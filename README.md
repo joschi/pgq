@@ -352,7 +352,7 @@ meter provider collects, so the metric reader's interval sets how often pgq quer
 
 ```go
 reg, err := pgq.RegisterQueueMetrics(db, "my_queue", otel.GetMeterProvider(),
-	pgq.WithQueueMetricsMaxConsumeCount(3), // same value as the consumers' WithMaxConsumeCount
+	pgq.WithQueueMetricsMaxConsumeCount(3), // must equal the consumers' WithMaxConsumeCount
 )
 if err != nil {
 	return err
@@ -364,11 +364,14 @@ defer reg.Unregister()
 |:-------------------------------|:------------|:-------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `pgq.queue.pending_messages`   | `{message}` | Due messages with `processed_at IS NULL` that still have attempts left. Includes messages a consumer is processing and messages waiting for a retry. |
 | `pgq.queue.oldest_pending_age` | `s`         | `now() - created_at` of the oldest pending message, or 0 when nothing is pending.                                                                     |
-| `pgq.queue.exhausted_messages` | `{message}` | Due messages with `processed_at IS NULL` whose `consumed_count` reached the max consume count. Consumers skip them and pgq never deletes them.        |
+| `pgq.queue.exhausted_messages` | `{message}` | Due messages with `processed_at IS NULL` whose `consumed_count` reached the max consume count and that no consumer holds a lock on. Consumers skip them and pgq never deletes them. A message on its last attempt counts as pending until that attempt ends. |
 
 All three carry the `queue_name` attribute. A message is due when `scheduled_for` is `NULL` or in the past, so a message
 scheduled for later doesn't count until then. ACKed and discarded messages have `processed_at` set and never count.
 
+- `WithQueueMetricsMaxConsumeCount` must match the consumers' `WithMaxConsumeCount`. pgq can't check this. With a
+  lower value, messages that consumers still retry count as exhausted. With a higher one, exhausted messages count as
+  pending and pin `oldest_pending_age`.
 - The query uses the database clock, so `oldest_pending_age` keeps growing when every consumer is stopped. Alert on it.
 - The age counts from `created_at`. A message scheduled for tomorrow reports an age of one day the moment it becomes due.
 - The metrics describe the whole table. They ignore consumer metadata filters and `WithHistoryLimit`, so on a table

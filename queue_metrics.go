@@ -36,7 +36,9 @@ func WithQueueMetricsMaxConsumeCount(n uint) QueueMetricsOption {
 //   - pgq.queue.oldest_pending_age is now - created_at of the oldest of those
 //     messages in seconds, or 0 when there are none.
 //   - pgq.queue.exhausted_messages counts due, unprocessed messages whose
-//     consumed_count reached the max consume count. Consumers skip them.
+//     consumed_count reached the max consume count and that no consumer
+//     holds a lock on. Consumers skip them. A message on its last attempt
+//     stays pending until that attempt's lock is released or expires.
 //
 // A message is due when scheduled_for is NULL or in the past. ACKed and
 // discarded messages have processed_at set and never count.
@@ -83,7 +85,9 @@ func RegisterQueueMetrics(db *pgxpool.Pool, queueName string, mp metric.MeterPro
 		COALESCE(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP - min(created_at) FILTER (WHERE NOT exhausted)), 0)::float8,
 		count(*) FILTER (WHERE exhausted)
 	FROM (
-		SELECT created_at, ($1::int > 0 AND consumed_count >= $1::int) AS exhausted
+		SELECT created_at,
+			($1::int > 0 AND consumed_count >= $1::int
+				AND (locked_until IS NULL OR locked_until < CURRENT_TIMESTAMP)) AS exhausted
 		FROM ` + pg.QuoteIdentifier(queueName) + `
 		WHERE processed_at IS NULL AND (scheduled_for IS NULL OR scheduled_for < CURRENT_TIMESTAMP)
 	) q`

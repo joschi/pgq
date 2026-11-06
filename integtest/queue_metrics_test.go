@@ -23,7 +23,8 @@ import (
 )
 
 func TestQueueMetrics_message_states(t *testing.T) {
-	db, queue := createMetricsQueue(t)
+	db := openDB(t)
+	queue := createMetricsQueue(t, db)
 	reader := sdkmetric.NewManualReader()
 	_, err := RegisterQueueMetrics(db, queue, sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 	require.NoError(t, err)
@@ -56,7 +57,8 @@ func TestQueueMetrics_message_states(t *testing.T) {
 		oldestAge          float64
 	}{
 		{max: 0, pending: 5, exhausted: 0, oldestAge: 4 * 3600},
-		{max: 1, pending: 2, exhausted: 3, oldestAge: 30},
+		// The row being processed is on its last attempt: still pending, not exhausted.
+		{max: 1, pending: 3, exhausted: 2, oldestAge: 60},
 		{max: 5, pending: 5, exhausted: 0, oldestAge: 4 * 3600},
 	} {
 		r := sdkmetric.NewManualReader()
@@ -71,12 +73,13 @@ func TestQueueMetrics_message_states(t *testing.T) {
 }
 
 func TestQueueMetrics_consumers_and_queues(t *testing.T) {
-	db, queue := createMetricsQueue(t)
-	_, otherQueue := createMetricsQueue(t, "other")
+	db := openDB(t)
+	queue := createMetricsQueue(t, db)
+	otherQueue := createMetricsQueue(t, db, "other")
 	reader := sdkmetric.NewManualReader()
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
 	for _, q := range []string{queue, otherQueue} {
-		_, err := RegisterQueueMetrics(db, q, mp)
+		_, err := RegisterQueueMetrics(db, q, mp, WithQueueMetricsMaxConsumeCount(1))
 		require.NoError(t, err)
 	}
 
@@ -88,6 +91,9 @@ func TestQueueMetrics_consumers_and_queues(t *testing.T) {
 
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseAll)
 	handler := MessageHandlerFunc(func(context.Context, *MessageIncoming) (bool, error) {
 		started <- struct{}{}
 		<-release
@@ -95,7 +101,7 @@ func TestQueueMetrics_consumers_and_queues(t *testing.T) {
 	})
 	var wg sync.WaitGroup
 	for range 2 {
-		c, err := NewConsumer(db, queue, handler, WithStopOnEmptyQueue(true), WithPollingInterval(10*time.Millisecond))
+		c, err := NewConsumer(db, queue, handler, WithMaxConsumeCount(1), WithStopOnEmptyQueue(true), WithPollingInterval(10*time.Millisecond))
 		require.NoError(t, err)
 		wg.Go(func() {
 			if err := c.Run(context.Background()); err != io.EOF {
@@ -111,11 +117,12 @@ func TestQueueMetrics_consumers_and_queues(t *testing.T) {
 		}
 	}
 
-	// Messages being processed are still pending.
+	// Messages being processed on their last attempt are pending, not exhausted.
 	require.Equal(t, int64(2), collectQueueState(t, reader, queue).pending)
+	require.Equal(t, int64(0), collectQueueState(t, reader, queue).exhausted)
 	require.Equal(t, queueState{}, collectQueueState(t, reader, otherQueue))
 
-	close(release)
+	releaseAll()
 	wg.Wait()
 	require.Equal(t, queueState{}, collectQueueState(t, reader, queue))
 }
@@ -137,7 +144,7 @@ func TestQueueMetrics_query_error_and_unregister(t *testing.T) {
 	}
 	require.Equal(t, 0, countDataPoints(rm))
 
-	_, queue := createMetricsQueue(t)
+	queue := createMetricsQueue(t, db)
 	reg, err := RegisterQueueMetrics(db, queue, mp)
 	require.NoError(t, err)
 	require.NoError(t, missing.Unregister())
@@ -150,7 +157,8 @@ func TestQueueMetrics_query_error_and_unregister(t *testing.T) {
 }
 
 func TestQueueMetrics_large_history(t *testing.T) {
-	db, queue := createMetricsQueue(t)
+	db := openDB(t)
+	queue := createMetricsQueue(t, db)
 	ctx := context.Background()
 	_, err := db.Exec(ctx, fmt.Sprintf(`
 		INSERT INTO %[1]s (created_at, processed_at, consumed_count, payload, metadata)
@@ -231,12 +239,11 @@ func requireSeconds(t *testing.T, want, got float64) {
 	}
 }
 
-func createMetricsQueue(t *testing.T, suffix ...string) (*pgxpool.Pool, string) {
+func createMetricsQueue(t *testing.T, db *pgxpool.Pool, suffix ...string) string {
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
 	ctx := context.Background()
-	db := openDB(t)
 	queue := strings.Join(append([]string{t.Name()}, suffix...), "_")
 	_, _ = db.Exec(ctx, schema.GenerateDropTableQuery(queue))
 	_, err := db.Exec(ctx, schema.GenerateCreateTableQuery(queue))
@@ -245,5 +252,5 @@ func createMetricsQueue(t *testing.T, suffix ...string) (*pgxpool.Pool, string) 
 		_, err := db.Exec(ctx, schema.GenerateDropTableQuery(queue))
 		require.NoError(t, err)
 	})
-	return db, queue
+	return queue
 }
