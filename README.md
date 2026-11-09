@@ -304,6 +304,7 @@ You can configure the consumer by passing the optional `ConsumeOptions` when cre
 | WithPollingInterval                   | Defines the frequency of asking postgres table for the new message `[time.Duration]`.                                                                                                                                                                                                 |
 | WithAckTimeout                        | Sets the timeout for updating the message status when a message is processed `[time.Duration]`.                                                                                                                                                                                       |
 | WithMaxConsumeCount                   | Sets the maximal number of times a message can be consumed before it is discarded. Prevents infinite processing loops caused by OOM errors, uncaught panics, etc. Set to 0 to disable.                                                                                                |
+| WithRetryBackoff                      | Delays redelivery of NACKed messages with exponential backoff and jitter. See [Retry backoff](#retry-backoff). Default: immediate redelivery.                                                                                                                                       |
 | WithMessageProcessingReserveDuration  | Sets the duration reserved for handling the message result state (ack/nack) after processing `[time.Duration]`.                                                                                                                                                                       |
 | WithStopOnEmptyQueue                  | When set to true, the consumer stops after the queue is empty instead of continuing to poll.                                                                                                                                                                                          |
 | WithInvalidMessageCallback            | Handle the invalid messages which may appear in the queue. You may re-publish it to some junk queue etc.                                                                                                                                                                              |
@@ -322,6 +323,63 @@ consumer, err := NewConsumer(db, queueName, handler,
 		WithTracerProvider(otel.GetTracerProvider()),
 	)
 ```
+
+### Retry backoff
+
+By default a NACKed message is eligible for redelivery right away, so a downstream outage of a few seconds can use up
+every `WithMaxConsumeCount` attempt. `WithRetryBackoff` spaces the attempts out.
+
+```go
+consumer, err := pgq.NewConsumer(db, queueName, handler,
+	pgq.WithMaxConsumeCount(6),
+	pgq.WithRetryBackoff(pgq.ExponentialBackoff{
+		Initial:    5 * time.Second, // base delay after the 1st failed attempt
+		Multiplier: 2,               // base grows 5s, 10s, 20s, 40s, ...
+		Max:        5 * time.Minute, // cap on the base delay; 0 means no cap
+		Jitter:     0.2,             // each delay is 80% to 100% of its base
+	}),
+)
+```
+
+On NACK the consumer sets `locked_until` to `now() + delay` using the database clock. Consumers skip rows whose
+`locked_until` is in the future, so the delay holds across restarts, crashes and replicas. A message waiting for a retry
+doesn't hold a worker slot. Existing queue tables work unchanged.
+
+After the n-th failed attempt the delay is computed in two steps:
+
+```
+base  = Initial × Multiplier^(n-1), capped at Max when Max > 0
+delay = base × (1 - Jitter × r), with r uniform in [0, 1)
+```
+
+The delay is uniform between `(1 - Jitter) × base` and `base`. It never exceeds `Max`, and it keeps varying once `base`
+reaches `Max`, so retries stay spread out during a long outage. With `Max = 0` the delay has no cap. Combined with
+`WithMaxConsumeCount(0)` it grows until it saturates at about 292 years, so set `Max` whenever attempts are unlimited.
+`NewConsumer` returns an error for a negative `Initial` or `Max`, a `Multiplier` other than 0 or at least 1, or a
+`Jitter` outside 0 to 1.
+
+| Event                            | `consumed_count` | `locked_until`                                 |
+|:---------------------------------|:-----------------|:-----------------------------------------------|
+| Published                        | 0                | `NULL`                                         |
+| Claimed by a consumer            | +1               | consumer host time + `LockDuration`            |
+| ACK or discard                   | unchanged        | `NULL`, and `processed_at` is set              |
+| NACK with attempts left          | unchanged        | database time + `delay(consumed_count)`        |
+| NACK on the last attempt         | unchanged        | `NULL`                                         |
+| NACK with backoff disabled       | unchanged        | `NULL`                                         |
+| Consumer crash                   | unchanged        | keeps the claim lock until it expires          |
+
+- A crashed attempt still counts in `consumed_count`, so the next NACK waits longer. The crash itself delays the retry
+  until the claim lock expires, which takes up to `LockDuration`.
+- Once `consumed_count` reaches `WithMaxConsumeCount`, consumers skip the message, the same as without backoff. The row
+  stays in the table with `processed_at IS NULL`.
+- pgq never changes `scheduled_for`. Consumers pick up a scheduled message once it is due, and NACKs after that add
+  backoff on top.
+- With `WithHistoryLimit`, consumers only claim messages created within the limit. A message whose next retry falls
+  outside that window is never claimed again, so keep the total backoff well below the history limit.
+- `WithStopOnEmptyQueue(true)` stops the consumer as soon as no message is claimable. Messages waiting out a retry delay
+  aren't claimable, so the consumer exits without waiting for them.
+- The table doesn't record whether a message is waiting for a retry or being processed. Both have
+  `processed_at IS NULL` and `locked_until` in the future.
 
 For more detailed usage examples and API documentation, please refer to the <a href="https://pkg.go.dev/github.com/joschi/pgq" target="_blank">pgq GoDoc page</a>.
 
