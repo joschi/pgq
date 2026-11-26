@@ -92,10 +92,11 @@ type MessageIncoming struct {
 // limit the number of attempts setting WithMaxConsumeCount to zero, it always
 // returns false.
 func (m *MessageIncoming) LastAttempt() bool {
-	if m.maxConsumedCount == 0 {
-		return false
-	}
-	return m.Attempt >= int(m.maxConsumedCount)
+	return isLastAttempt(m.Attempt, m.maxConsumedCount)
+}
+
+func isLastAttempt(attempt int, maxConsumeCount uint) bool {
+	return maxConsumeCount != 0 && attempt >= int(maxConsumeCount)
 }
 
 // SetTimeout sets the message timeout. If the timeout is after the message
